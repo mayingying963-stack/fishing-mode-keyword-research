@@ -1,0 +1,28 @@
+# Byte-compiled / cache
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Outputs produced by runs — never commit other people's keyword data
+out/
+exports/
+*.xlsx
+*.bak
+*_preview.png
+_crop_*.png
+
+# Keep the fixture inputs used by selftest out of git only if they are real data
+# (selftest generates its fixtures in a temp dir, so nothing to exclude there)
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Secrets — the skill reads these from the environment, never from a file
+.env
+.env.*
+!.env.example
