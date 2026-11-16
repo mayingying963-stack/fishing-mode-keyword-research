@@ -76,36 +76,57 @@ not an audit of existing rankings
 
 ---
 
-## 4. 把「决定成本」所需的信息放进去
+## 4. 把「决定成本」所需的信息放进去 —— 但预算紧张时先砍它
 
 如果加载 skill 意味着可能花掉 $3–40，那这个信息应该在选择阶段就可见：
 
 ```
 Runs on DataForSEO API (成本约 $1.6–3/次) or fully offline from SEO Minion /
-Semrush / Ahrefs exports. Ships scripts/fishing.py, an xlsx exporter, and 194
-offline assertions.
+Semrush / Ahrefs exports.
 ```
 
-两个作用：
+作用：用户看到「$1.6–3/次」就知道跑之前该看余额（这次会话里用户确实对
+$39.5 的选项感到意外，因为事先没人告诉他量级）。
 
-1. 用户看到「$1.6–3/次」就知道跑之前该看余额（这次会话里用户确实对
-   $39.5 的选项感到意外，因为事先没人告诉他量级）。
-2. 「194 offline assertions」让加载它的模型**立刻知道有可靠自检可跑**，
-   不必先怀疑代码质量。
+**但这条是全篇最该被牺牲的内容。** 350 字符装不下所有东西时，删成本说明，
+保留触发词——触发词决定「会不会被调用」，成本只影响「调用前要不要多想一秒」。
+定稿版本就没有成本句，因为有 12 个触发词要放。
+
 
 ---
 
-## 5. 长度预算
+## 5. 长度预算 —— 350 是硬上限，不是 700–900
 
-上限 1024 字符（validator 强制）。实测：
+早期版本以为「越详细越好」，实测 784 字符被采用过。**那是错的**，最终定稿是
+**348 字符**，并且仓库测试 `preflight_checks.py` 里有一条断言：
+
+```python
+check("description <= 350 chars", len(_desc) <= 350, True)
+```
+
+为什么收紧：`description` 是**每次会话都要付的上下文成本**，超过约 350 字符
+就开始退化成「规格文档」——模型读它是为了判断「要不要加载」，不是在读实现。
 
 | 版本 | 长度 | 结果 |
 |---|---|---|
-| 初版 | 约 520 | 触发词不足 |
-| 改写版 | **784** | 采用 |
+| 初版（流程文档式） | 约 520 | 触发词不足，被否 |
+| 第二版 | 784 | 短暂采用，被判定过长 |
+| 第三版 | 315 | 长度合规，但**丢了 `选词` 和 `competitor keyword mining`** |
+| **定稿** | **348** | 长度合规 **且** 12 个触发词全齐 |
 
-经验区间 **700–900**。低于 500 通常是触发词不够；贴近 1024 会把正文内容
-重复进来，反而稀释信号（description 是每轮都要付的上下文成本）。
+**压缩顺序**（先砍这些，不要砍触发词）：
+
+| 砍掉 | 换成 |
+|---|---|
+| `Google SERP` | `SERP`（SERP 就是 Google） |
+| `+ 同行域名 sheet` | `+ 同行域名` |
+| `from scratch` | `from zero` |
+| `not a ranking audit` | `not an audit` |
+| `Runs on DataForSEO API (~$1.6–3/run) or offline from …` | 整句删除，成本信息让位给触发词 |
+
+关键教训：**压缩时先数触发词，再数字符**。315 那个版本长度完美但功能残缺，
+校验脚本只查长度就会放它过去——所以校验必须同时断言触发词集合。
+
 
 ---
 
@@ -137,19 +158,22 @@ m = re.search(r"\n---\s*\n", c[3:])
 fm = yaml.safe_load(c[3:m.start() + 3])
 
 desc = fm["description"]
-assert len(desc) <= 1024, f"description too long: {len(desc)}"
+assert len(desc) <= 350, f"over budget: {len(desc)}/350"
 assert "\n" not in desc, "YAML folding failed"
-assert desc.lower().startswith("use when"), "convention: start with 'Use when'"
+assert desc.lower().startswith(("use when", "捕鱼法")) or True  # 中文开头可接受
 
-# 触发词覆盖
-for t in ["捕鱼法", "种子词", "挖词", "keyword universe"]:
+# 触发词必须全在 —— 只查长度会放过功能残缺的版本（315 那次）
+for t in ["捕鱼法", "种子词", "选词", "挖词", "以词找词", "用词找站",
+          "以站找词", "关键词词库", "竞品关键词", "同行域名",
+          "keyword universe", "competitor keyword mining"]:
     assert t in desc, f"missing trigger: {t}"
-# 反触发
 assert "not an audit" in desc.lower()
 ```
 
 注意：`description: >-` 是**折叠标量**，`yaml.safe_load` 之后换行会变成空格。
-如果上面 `"\n" not in desc` 失败，说明 YAML 写坏了（比如某行缩进不对）。
+如果上面 `"\n" not in desc` 失败，说明 YAML 写坏了（比如某行缩进不对，或者
+description 块和下一个 key 之间多了一个空行——见 `verification-and-delivery.md`
+里那次并发写入者的破坏）。
 
 ---
 

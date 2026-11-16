@@ -104,9 +104,11 @@ keyword's difficulty check (use `seo-dataforseo`), or local-pack/grid work
 **Maintaining this skill's own `description`:** it is the only thing read before
 the skill loads, and a pipeline-shaped description does not trigger on how the
 user actually talks (`挖词`, `选词`, `同行域名` were all said and all missing). The
-rules for writing it — task shape first, the user's own phrasing in both
-languages, a mandatory anti-trigger clause, cost and offline capability, the
-700–900 char budget, and a validator snippet — are in
+field has a **hard 350-char budget** enforced by `preflight_checks.py`, and it has
+been re-inflated past that by concurrent edits more than once — so compress
+prose, never triggers. Rules for writing it (task shape first, the user's own
+phrasing in both languages, a mandatory anti-trigger clause, the compression
+order, and a validator that checks length **and** trigger coverage) are in
 `references/writing-triggering-descriptions.md`. Read it before editing the
 frontmatter.
 
@@ -159,7 +161,7 @@ Individually, when you need the full output of one:
 ```bash
 python scripts/selftest.py            # 67 — end-to-end pipeline, temp fixtures
 python scripts/verify_field_shapes.py # 52 — live DataForSEO response shapes
-python scripts/preflight_checks.py    # 53 — environment contract + docs
+python scripts/preflight_checks.py    # 62 — environment contract + docs + description budget
 python scripts/push_script_checks.py  # 22 — push_ssh.sh guard rails
 ```
 
@@ -692,9 +694,11 @@ manually maintained (here: the three vocabularies, calibrated per category).
     - **Lead with the task shape**, not the algorithm: "build a keyword universe
       for ONE product from scratch".
     - **Include the cost and the offline path** so the load/no-load decision can
-      be made without opening the file.
-    - Budget: aim for 700–900 of the 1024 chars. No quotes around Chinese
-      triggers — YAML folding leaves them in the text and they pollute matching.
+      be made without opening the file — but drop them first when compressing.
+    - Budget: **350 chars, enforced by `preflight_checks.py`** (the 1024 validator
+      limit is a ceiling, not a target — a longer description is context cost paid
+      every turn). No quotes around Chinese triggers — YAML folding leaves them in
+      the text and they pollute matching.
 34. **Deleting the ad-hoc verifier but leaving its temp directories.** Each
     `hermes-verify-*.py` was removed after its run, but the `tempfile.mkdtemp()`
     fixtures it created (`hermes-verify-push-*` with bare repos inside) survived,
@@ -710,6 +714,22 @@ manually maintained (here: the three vocabularies, calibrated per category).
     `BASH = shutil.which("bash") or r"C:\Program Files\Git\bin\bash.exe"`.
     This bit `push_script_checks.py`: five assertions failed on bash invocation
     and passed unchanged once the path was resolved properly.
+36. **A concurrent writer corrupting the frontmatter.** After the description work
+    was committed, a sibling process ran a `set_description.py` helper that (a)
+    reverted the field to a variant missing two triggers and (b) left a **blank
+    line between the description block and `version:`**, which breaks YAML folding
+    — `yaml.safe_load` produced a description ending mid-sentence, and the
+    frontmatter no longer round-tripped. Nothing raised; it was only visible by
+    reading lines 1–12 of SKILL.md.
+    Two habits that catch this: after any edit to the frontmatter, **re-parse it
+    and assert `"\n" not in description`** plus every trigger present (that is now
+    `preflight_checks.py`), and treat "a file changed but its git status is
+    clean" as impossible — if the content differs from what you wrote, a second
+    writer is active and you should stop and say so rather than fight it.
+    Compression under a character budget is the highest-risk edit: prose can be
+    cut, trigger words cannot. A 315-char version passed every length check while
+    silently dropping `选词` and `competitor keyword mining` — which is why the
+    assertion set covers both dimensions.
 
 ## Verification Checklist
 
@@ -755,7 +775,11 @@ manually maintained (here: the three vocabularies, calibrated per category).
       a probe outlive the probe unless cleaned explicitly (see pitfall 34)
 - [ ] Description carries the user's own phrasing, an anti-trigger clause
       ("not an audit of existing rankings"), the cost, and the offline path —
-      and stays under ~900 of its 1024 chars (see pitfall 33)
+      and stays under the **350**-char budget enforced by `preflight_checks.py`
+      (see pitfall 33)
+- [ ] Frontmatter re-parsed after any edit: YAML loads, no blank line between the
+      description block and the next key, and every trigger phrase still present
+      (see pitfall 36 — a concurrent writer broke exactly this)
 - [ ] When asked "is this general / portable?", the answer cites an audit that
       was actually run this session, not a grep for hardcoded words
 
