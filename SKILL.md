@@ -1,17 +1,13 @@
 ---
 name: fishing-mode-keyword-research
 description: >-
-  Use when the user wants to build a keyword universe for ONE product from
-  scratch — 捕鱼法 / Fishing-Mode (SEO小平's SOP), not an audit of existing
-  rankings. Turns 5 seed keywords into a deduplicated keyword table: per-seed
-  expansion → on-topic filtering → Google top-50 SERP per keyword → junk-domain
-  removal (amazon/walmart/youtube) → each surviving competitor domain's top-100
-  keywords → cross-dedup into 关键词/搜索意图/搜索量/竞争难度 plus a competitor-domain
-  sheet. Triggers on 捕鱼法, 捕鱼模式, 种子词, 以词找词, 用词找站, 以站找词, 关键词词库,
-  竞品关键词, 同行域名, 选词, 挖词, keyword universe, competitor keyword mining,
-  keyword research for a new product, SEO小平. Runs on DataForSEO API (成本约
-  $1.6–3/次) or fully offline from SEO Minion / Semrush / Ahrefs exports. Ships
-  scripts/fishing.py, an xlsx exporter, and 194 offline assertions.
+  捕鱼法/Fishing-Mode keyword research (SEO小平 SOP): 5 seeds → per-seed
+  expansion → top-50 Google SERP each → drop junk domains → competitors'
+  top-100 keywords → dedup to 关键词/意图/搜索量/难度 + 同行域名 sheet. Builds a
+  keyword universe for one product from scratch; not a ranking audit. Triggers:
+  捕鱼法, 捕鱼模式, 种子词, 以词找词, 用词找站, 以站找词, 关键词词库, 竞品关键词,
+  同行域名, 挖词, 选词, keyword universe, competitor keyword mining. Runs on
+  DataForSEO API (~$1.6–3/run) or offline from SEO Minion/Semrush/Ahrefs exports.
 version: 1.0.0
 author: Hermes Agent
 license: MIT
@@ -105,6 +101,15 @@ spreadsheet showed it in one line.
 **Don't use for:** auditing an existing site's rankings (use `seo-audit`), a single
 keyword's difficulty check (use `seo-dataforseo`), or local-pack/grid work
 (use `seo-maps`).
+
+**Maintaining this skill's own `description`:** it is the only thing read before
+the skill loads, and a pipeline-shaped description does not trigger on how the
+user actually talks (`挖词`, `选词`, `同行域名` were all said and all missing). The
+rules for writing it — task shape first, the user's own phrasing in both
+languages, a mandatory anti-trigger clause, cost and offline capability, the
+700–900 char budget, and a validator snippet — are in
+`references/writing-triggering-descriptions.md`. Read it before editing the
+frontmatter.
 
 ## Setup
 
@@ -477,6 +482,24 @@ Two more things that made this exchange work on the second attempt:
   one line and fix it, instead of explaining it away as a data limit. The user's
   trust recovered on the answer that led with "两个是我的错".
 
+### Claims about generality are hypotheses, not facts
+
+When the user asks "这个 skill 是所有产品词通用的一种调查逻辑吧？" the wrong answer
+is "对，没有硬编码" — the right answer is to *test* it and report what breaks.
+"Grep found no `forklift` in the logic" proves only that no literal is hardcoded;
+it says nothing about whether the rules hold on another vertical. On this skill
+the audit found three structural defects the original vertical could never
+expose (see `references/product-agnostic-relevance.md`).
+
+So the answer shape is: (1) state what the code does contain, (2) run the audit,
+(3) report the failures found, (4) fix and re-verify, (5) re-state the conclusion
+as measured rather than designed. Ending with "是通用的，但这个结论现在是实测出来的，
+不是设计意图" is what made the claim credible.
+
+Same pattern for any "will this run on any machine / any product / any tool"
+question: audit first, then answer, and be explicit about what remains
+manually maintained (here: the three vocabularies, calibrated per category).
+
 ## Common Pitfalls
 
 1. **Trusting token overlap for relevance.** Any single shared word passes a naive
@@ -656,6 +679,38 @@ Two more things that made this exchange work on the second attempt:
     secret scanner matched its own file the moment it was committed. When a suite
     is intermittently red, diff the *state* (untracked files, committed files, env)
     rather than re-running and hoping.
+33. **A description that describes the pipeline instead of triggering it.** The
+    first version read like documentation ("Five seed keywords → keyword-ideas
+    expansion → …") and carried few of the words the user actually types, so a
+    request like "帮我给 LEAP 挖一批词" would not have matched. A description is
+    read **before** the skill loads, so it must answer "is this me?" without any
+    of the body. What fixed it:
+    - **Use the user's own words, both languages.** `挖词`, `选词`, `竞品关键词`,
+      `同行域名` were all things the user said and none were in the description.
+    - **State the anti-trigger.** Writing "not an audit of existing rankings"
+      stops it competing with `seo-audit` / `seo-page` for a generic "关键词调研"
+      request. Without a negative clause the model cannot tell them apart.
+    - **Lead with the task shape**, not the algorithm: "build a keyword universe
+      for ONE product from scratch".
+    - **Include the cost and the offline path** so the load/no-load decision can
+      be made without opening the file.
+    - Budget: aim for 700–900 of the 1024 chars. No quotes around Chinese
+      triggers — YAML folding leaves them in the text and they pollute matching.
+34. **Deleting the ad-hoc verifier but leaving its temp directories.** Each
+    `hermes-verify-*.py` was removed after its run, but the `tempfile.mkdtemp()`
+    fixtures it created (`hermes-verify-push-*` with bare repos inside) survived,
+    because cleanup sat in a `finally` that never ran when an assertion exited the
+    script first. Two rules: name every temp dir with the same `hermes-verify-`
+    prefix so strays are greppable, and `ls -d $TMP/hermes-verify-*` after the run
+    rather than trusting the `finally`.
+35. **`subprocess.run(["bash", ...])` resolving to the wrong bash on Windows.**
+    The MSYS path `/usr/bin/bash` is not a Windows executable — `CreateProcess`
+    raises `WinError 2`, and in some configurations the name instead resolves to
+    the WSL relay, which fails with `execvpe(/bin/bash)`. Both look like "bash is
+    broken" while bash is fine. Resolve the real executable:
+    `BASH = shutil.which("bash") or r"C:\Program Files\Git\bin\bash.exe"`.
+    This bit `push_script_checks.py`: five assertions failed on bash invocation
+    and passed unchanged once the path was resolved properly.
 
 ## Verification Checklist
 
@@ -697,6 +752,13 @@ Two more things that made this exchange work on the second attempt:
 - [ ] If you wrote an ad-hoc verification script this session, promote it into
       `scripts/` and add it to `SUITES` instead of deleting it; see
       `references/verification-and-delivery.md`
+- [ ] `ls -d "$TMP"/hermes-verify-*` run after verification: temp dirs created by
+      a probe outlive the probe unless cleaned explicitly (see pitfall 34)
+- [ ] Description carries the user's own phrasing, an anti-trigger clause
+      ("not an audit of existing rankings"), the cost, and the offline path —
+      and stays under ~900 of its 1024 chars (see pitfall 33)
+- [ ] When asked "is this general / portable?", the answer cites an audit that
+      was actually run this session, not a grep for hardcoded words
 
 ## Attribution
 
