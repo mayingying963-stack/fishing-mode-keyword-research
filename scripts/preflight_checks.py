@@ -144,14 +144,20 @@ _fm = yaml.safe_load(skilldoc[3:_fm_match.start() + 3])
 _desc = _fm.get("description", "")
 check("description <= 350 chars", len(_desc) <= 350, True)
 check("description is non-trivial (> 80 chars)", len(_desc) > 80, True)
-# `name` must match the directory when the skill is installed the normal way
-# (skills/<category>/<name>/). A plain `git clone` may land in any directory name
-# — verifyclone, repo, tmp123 — so only assert when the folder looks like a skill
-# name; otherwise the check fails for every cloner and teaches people to ignore it.
-if re.fullmatch(r"[a-z0-9][a-z0-9_-]*", ROOT.name) and "-" in ROOT.name:
-    check("name matches directory", _fm.get("name"), ROOT.name)
+
+# `name` must match the directory, but only when the skill is installed the normal
+# way (skills/<category>/<name>/). A plain `git clone` can land anywhere —
+# repo-clone, tmp123, my copy — and failing there says nothing about the code.
+# The discriminator has to be the *skill name itself*, not the folder's shape:
+# an earlier version tested "looks like a skill name (lowercase + hyphen)", which
+# is true for 'repo-clone' too and produced exactly the false failure it was
+# meant to prevent.
+_skill_name = _fm.get("name", "")
+if ROOT.name == _skill_name:
+    check("name matches directory", _skill_name, ROOT.name)
 else:
-    print(f"  (skipped name/dir check: clone dir {ROOT.name!r} is not a skill name)")
+    print(f"  (skipped name/dir check: running from {ROOT.name!r}, "
+          f"skill is {_skill_name!r} — clone dir, not an install)")
 for trigger in ("捕鱼法", "种子词", "以词找词", "用词找站", "以站找词", "挖词"):
     check(f"description keeps trigger {trigger}", trigger in _desc, True)
 for needle in ("Python", "requests", "openpyxl", "DATAFORSEO_LOGIN",
