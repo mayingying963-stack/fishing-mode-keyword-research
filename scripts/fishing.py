@@ -37,9 +37,9 @@ from urllib.parse import urlparse
 BASE = "https://api.dataforseo.com/v3/"
 
 # --- defaults tuned for the SOP ------------------------------------------------
-SEED_IDEAS_LIMIT = 500     # step 1: candidate keywords per run (filtered down later)
-SHEET1_KEEP = 30           # step 2: keep the 30 best related+hvol keywords
-SERP_DEPTH = 50            # step 3: top-50 organic results per keyword
+PER_SEED_IDEAS = 30       # step 1: candidate keywords PER seed (5 seeds -> 150)
+SHEET1_KEEP = 30          # per-seed cap applied inside sheet1 (kept for API compat)
+SERP_DEPTH = 50           # step 3: top-50 organic results per keyword
 DOMAIN_KW_LIMIT = 100      # step 4: top-100 ranked keywords per domain
 
 # Step 2's explicit exclusion list from the SOP, plus the usual suspects that
@@ -240,6 +240,74 @@ def relevant(keyword: str, seeds: list[str], extra_terms: list[str]) -> bool:
     return True
 
 
+def adjacent_categories(seeds: list[str]) -> set[str]:
+    """Category nouns that sit next to ours but are different products.
+
+    Derived from the seeds' own nouns plus a fixed list of battery-adjacent
+    verticals. Used by the relaxed rule so a competitor site's solar / golf-cart /
+    car-battery keywords are dropped without demanding a strict phrase match.
+    """
+    base = {"battery", "batteries", "cell", "cells", "pack", "packs"}
+    base |= {w for s in seeds for w in re.findall(r"[a-z0-9]+", s.lower())}
+    return base - ADJACENT_VERTICALS
+
+
+# Verticals that are a different product even when the word "battery" appears.
+ADJACENT_VERTICALS = {
+    "car", "auto", "automotive", "truck", "tractor", "marine", "boat", "rv",
+    "camper", "motorcycle", "scooter", "ebike", "bike", "phone", "laptop",
+    "solar", "golf", "cart", "cart's", "ups", "generator", "drone", "rv's",
+    "powerwall", "residential", "home", "hearing", "watch", "tool", "toys",
+}
+
+# Keywords that are about the *machine* or the *service*, never the part we sell.
+# A competitor selling batteries also ranks for "forklift certified" (a course),
+# "forklift rental near me" (a service) and "forklift repair" — dropping these is
+# the difference between a battery keyword list and a forklift-industry dump.
+NON_PRODUCT_INTENT = {
+    "certified", "certification", "training", "course", "classes", "license",
+    "licence", "rental", "rent", "rentals", "hire", "leasing", "lease",
+    "operator", "job", "jobs", "salary", "career", "school", "test", "exam",
+    "auction", "repair near", "service near",
+}
+
+
+def relevant_competitor(keyword: str, seeds: list[str], extra_terms: list[str]) -> bool:
+    """Step 03 relevance: relaxed rule for keywords a *competitor domain* ranks for.
+
+    The strict rule in `relevant()` demands the industry qualifier ("forklift").
+    Applied to competitor keywords it was catastrophic on real data: leochlithium.us,
+    redwaypower.com, malinusa.com and innovdepot.com — all battery rivals surfaced
+    by our own SERPs — kept **0 of 100** keywords each, because their lists read
+    "lithium battery", "lifepo4 battery", "48v lithium battery". Those keywords are
+    the category itself, not a different product.
+
+    So for step 03 the test is the inverse: keep anything carrying a category token
+    unless it names an adjacent vertical (solar, golf cart, car, marine, RV...).
+    A domain only reaches step 03 because it ranked for our keywords, which is
+    already strong evidence it is in the same business.
+    """
+    k = (keyword or "").lower()
+    if not k:
+        return False
+    kset = set(re.findall(r"[a-z0-9]+", k))
+    # Service/training/rental words are never the product, whatever else is in
+    # the phrase: "forklift certified", "forklift rental near me", "forklift jobs".
+    if NON_PRODUCT_INTENT & kset:
+        return False
+    keep_tokens = adjacent_categories(seeds)
+    if extra_terms:
+        for t in extra_terms:
+            keep_tokens |= set(re.findall(r"[a-z0-9]+", str(t).lower()))
+    if not (keep_tokens & kset):
+        return False
+    # An adjacent vertical disqualifies, unless one of our seeds names it too
+    # (a business that genuinely sells golf-cart batteries passes "golf").
+    seed_tokens = {w for s in seeds for w in re.findall(r"[a-z0-9]+", s.lower())}
+    blocked = (ADJACENT_VERTICALS & kset) - seed_tokens
+    return not blocked
+
+
 # ------------------------------------------------------------------ DataForSEO
 class DataForSEO:
     def __init__(self) -> None:
@@ -290,16 +358,28 @@ class DataForSEO:
 
 
 def kw_row(item: dict, source: str = "") -> dict:
-    """Flatten a DataForSEO keyword item (Labs or SERP shape) into 4 SOP params."""
+    """Flatten a DataForSEO keyword item into the SOP's 4 params.
+
+    Two different response shapes come through here, and mixing them up silently
+    zeroed every difficulty value:
+
+      * ``keyword_suggestions`` / ``keyword_ideas`` return the keyword data
+        FLAT at the top level: ``item["keyword"]``, ``item["keyword_info"]``,
+        ``item["keyword_properties"]["keyword_difficulty"]``.
+      * ``ranked_keywords`` nests it under ``item["keyword_data"]``...
+
+    So look for the nested payload first and fall back to the item itself, then
+    read each sub-object from wherever it actually lives.
+    """
     kd = item.get("keyword_data") or item
-    info = kd.get("keyword_info") or {}
-    props = kd.get("keyword_properties") or {}
-    intent = ((kd.get("search_intent_info") or {}).get("main_intent"))
-    if intent is None:
-        intent = (item.get("search_intent_info") or {}).get("main_intent")
+    # keyword_info / keyword_properties / search_intent_info may sit on either level.
+    info = kd.get("keyword_info") or item.get("keyword_info") or {}
+    props = kd.get("keyword_properties") or item.get("keyword_properties") or {}
+    intent_info = (kd.get("search_intent_info")
+                   or item.get("search_intent_info") or {})
     return {
-        "keyword": (kd.get("keyword") or "").strip(),
-        "intent": norm_intent(intent),
+        "keyword": (kd.get("keyword") or item.get("keyword") or "").strip(),
+        "intent": norm_intent(intent_info.get("main_intent")),
         "volume": to_int(info.get("search_volume")),
         "difficulty": to_int(props.get("keyword_difficulty")),
         "source": source,
@@ -308,45 +388,72 @@ def kw_row(item: dict, source: str = "") -> dict:
 
 # ------------------------------------------------------------------ steps
 def step1_ideas(dfs: DataForSEO, seeds: list[str], loc: int, lang: str,
-                limit: int = SEED_IDEAS_LIMIT,
+                per_seed: int = PER_SEED_IDEAS,
                 use_ideas: bool = True) -> list[dict]:
-    """01 以词找词 — expand seeds into candidate keywords.
+    """01 以词找词 — expand EACH seed into `per_seed` candidate keywords.
 
-    `keyword_suggestions` is the primary source: it stays on-topic per seed and
+    The SOP quantifies this step: 5 seeds x 30 candidates = 150 sheet1 rows.
+    So each seed gets its own budget; a blended pool would let one high-volume
+    seed starve the rest.
+
+    `keyword_suggestions` is the primary source per seed: it stays on-topic and
     returns real volume for the seed itself. `keyword_ideas` is an associative
     broaden and drifts badly (seeding "forklift battery" returned smoke-detector
-    and car-battery terms with 200k volume), so its rows still pass through the
-    relevance filter and are merged behind the suggestions.
+    and car-battery terms with 200k volume), so it only fills seeds that
+    suggestions could not bring up to `per_seed`, and its rows still pass the
+    relevance filter in step 2.
     """
     rows: list[dict] = []
     seen: set[str] = set()
 
-    def add(items: list[dict], source: str) -> None:
+    def take(items: list[dict], source: str, want: int) -> int:
+        """Append up to `want` new, on-topic-ish rows. Returns how many were added."""
+        added = 0
         for it in items:
+            if added >= want:
+                break
             row = kw_row(it, source)
             nk = norm_kw(row["keyword"])
-            if row["keyword"] and nk not in seen:
-                seen.add(nk)
-                rows.append(row)
+            if not row["keyword"] or nk in seen:
+                continue
+            seen.add(nk)
+            rows.append(row)
+            added += 1
+        return added
 
-    # One call per seed keeps each seed's context; a combined call loses it.
     def one(seed: str):
         res = dfs.post("dataforseo_labs/google/keyword_suggestions/live", {
             "keyword": seed, "location_code": loc, "language_code": lang,
-            "limit": 100, "include_seed_keyword": True,
+            "limit": max(per_seed * 2, 100), "include_seed_keyword": True,
         })
         return seed, res
 
     with ThreadPoolExecutor(max_workers=5) as pool:
-        for seed, res in pool.map(one, seeds):
-            add((res or {}).get("items") or [], f"suggest:{seed}")
+        per_seed_results = list(pool.map(one, seeds))
 
-    if use_ideas:
-        res = dfs.post("dataforseo_labs/google/keyword_ideas/live", {
-            "keywords": seeds, "location_code": loc, "language_code": lang,
-            "limit": limit, "include_serp_info": False,
-        })
-        add((res or {}).get("items") or [], "ideas")
+    for seed, res in per_seed_results:
+        got = take((res or {}).get("items") or [], f"suggest:{seed}", per_seed)
+        log(f"  seed '{seed}' -> {got}/{per_seed} candidates from suggestions")
+
+    # Top up any seed that came up short, one targeted call per weak seed.
+    short = [s for s, res in per_seed_results]
+    for seed in short:
+        have = sum(1 for r in rows if r["source"] == f"suggest:{seed}") + \
+               sum(1 for r in rows if r["source"] == f"ideas:{seed}")
+        if have >= per_seed or not use_ideas:
+            continue
+        try:
+            res = dfs.post("dataforseo_labs/google/keyword_ideas/live", {
+                "keywords": [seed], "location_code": loc, "language_code": lang,
+                "limit": (per_seed - have) + 20, "include_serp_info": False,
+            })
+        except RuntimeError as err:
+            # A top-up is best-effort: one seed staying short must not kill the run.
+            log(f"  ! ideas top-up failed for '{seed}': {err}")
+            continue
+        extra = take((res or {}).get("items") or [], f"ideas:{seed}", per_seed - have)
+        if extra:
+            log(f"  seed '{seed}' topped up with {extra} idea rows")
 
     # Any seed the API never echoed back is added as a bare row, not a fake one.
     for s in seeds:
@@ -360,10 +467,49 @@ def step1_ideas(dfs: DataForSEO, seeds: list[str], loc: int, lang: str,
 
 def step2_sheet1(ideas: list[dict], seeds: list[str], extra_terms: list[str],
                  keep: int = SHEET1_KEEP) -> list[dict]:
-    """02 用词找站 (part 1) — the 30 related, highest-traffic keywords -> sheet1."""
+    """02 用词找站 (part 1) — per-seed top-`keep` keywords -> sheet1.
+
+    The SOP gives every seed its own net: 5 seeds x 30 = up to 150 rows. Each
+    seed must contribute its own best `keep` keywords, otherwise the loudest
+    seed takes the whole table and the other four get no representation.
+
+    Grouping: rows built by step1 carry `source` = "suggest:<seed>" or
+    "ideas:<seed>". Rows from other paths (offline exports, a re-read of
+    sheet1.csv) have no such prefix, so they are attributed to the seed they
+    overlap most. Previously every un-prefixed row landed in one bucket named
+    after its raw source, which silently collapsed the whole table to `keep`
+    rows total instead of `keep` per seed.
+    """
     filtered = [r for r in ideas if relevant(r["keyword"], seeds, extra_terms)]
-    filtered.sort(key=lambda r: (r["volume"], -(r["difficulty"] or 0)), reverse=True)
-    return filtered[:keep]
+
+    def seed_of(row: dict) -> str:
+        src = row.get("source") or ""
+        if ":" in src:
+            candidate = src.split(":", 1)[1]
+            if candidate in seeds:
+                return candidate
+        # Fall back to the seed sharing the most tokens with the keyword.
+        ktok = set(re.findall(r"[a-z0-9]+", (row.get("keyword") or "").lower()))
+        best, best_score = (seeds[0] if seeds else "seed"), -1
+        for s in seeds:
+            stok = set(re.findall(r"[a-z0-9]+", s.lower()))
+            score = len(ktok & stok)
+            if score > best_score:
+                best, best_score = s, score
+        return best
+
+    by_seed: dict[str, list[dict]] = {}
+    for r in filtered:
+        by_seed.setdefault(seed_of(r), []).append(r)
+
+    out: list[dict] = []
+    for seed, seed_rows in by_seed.items():
+        seed_rows.sort(key=lambda r: (r["volume"], -(r["difficulty"] or 0)), reverse=True)
+        picked = seed_rows[:keep]
+        log(f"  seed {seed!r}: {len(picked)} of {len(seed_rows)} on-topic rows -> sheet1")
+        out.extend(picked)
+    out.sort(key=lambda r: (r["volume"], -(r["difficulty"] or 0)), reverse=True)
+    return out
 
 
 DOMAIN_RE = re.compile(r"^[a-z0-9][a-z0-9\-]*(\.[a-z0-9\-]+)+$", re.I)
@@ -471,7 +617,7 @@ def serp_top_domains(dfs: DataForSEO, keywords: list[str], loc: int, lang: str,
             else:
                 hits.append(row)
 
-    return hits, collect_domains(hits)
+    return hits, dropped
 
 
 def step3_domain_keywords(dfs: DataForSEO, domains: list[str], loc: int, lang: str,
@@ -512,7 +658,7 @@ def step3_domain_keywords(dfs: DataForSEO, domains: list[str], loc: int, lang: s
             row = kw_row(it, dom)
             if not row["keyword"]:
                 continue
-            if seeds and not relevant(row["keyword"], seeds, extra_terms):
+            if seeds and not relevant_competitor(row["keyword"], seeds, extra_terms):
                 continue
             se = (it.get("ranked_serp_element") or {}).get("serp_item") or {}
             row["position"] = se.get("rank_group")
@@ -580,6 +726,9 @@ SHEET_HEADERS = {
     "sheet1": ["keyword", "intent", "volume", "difficulty"],
     "sheet2": ["keyword", "intent", "volume", "difficulty", "competitor_domain", "position"],
     "sheet3": ["keyword", "intent", "volume", "difficulty", "sources"],
+    # Internal trace file: keeps which seed/domain produced each row so reruns and
+    # offline merges can regroup rows instead of guessing from the keyword text.
+    "trace": ["keyword", "intent", "volume", "difficulty", "source"],
 }
 
 
@@ -749,13 +898,22 @@ def main(argv=None) -> int:
     ap.add_argument("--mode", choices=["api", "offline"], default="api")
     ap.add_argument("--location", type=int, default=2840, help="DataForSEO location_code (2840=US)")
     ap.add_argument("--language", default="en")
-    ap.add_argument("--sheet1-keep", type=int, default=SHEET1_KEEP)
-    ap.add_argument("--serp-targets", type=int, default=20,
-                    help="how many sheet1 keywords to pull SERPs for (cost control)")
+    ap.add_argument("--per-seed-ideas", type=int, default=PER_SEED_IDEAS,
+                    help="step 01 candidates per seed (5 seeds x 30 = 150 sheet1 rows)")
+    ap.add_argument("--sheet1-keep", type=int, default=SHEET1_KEEP,
+                    help="per-seed cap inside sheet1 (30 => 5*30=150 rows)")
+    ap.add_argument("--serp-targets", type=int, default=0,
+                    help="0 = run SERPs for EVERY sheet1 keyword (SOP behaviour). "
+                         "Set a number only to cap cost on a trial run.")
     ap.add_argument("--serp-depth", type=int, default=SERP_DEPTH)
     ap.add_argument("--domain-kw-limit", type=int, default=DOMAIN_KW_LIMIT)
-    ap.add_argument("--max-domains", type=int, default=15,
-                    help="cap domains sent to step 3 (cost control)")
+    ap.add_argument("--max-domains", type=int, default=0,
+                    help="0 = step 03 for EVERY surviving domain (SOP behaviour). "
+                         "Set a number only to cap cost on a trial run.")
+    ap.add_argument("--min-breadth", type=int, default=2,
+                    help="only mine domains appearing for at least N of your keywords. "
+                         "1 keeps the long tail (hundreds of one-off domains, mostly noise "
+                         "and a large bill); 3 focuses on real topical competitors.")
     ap.add_argument("--extra-exclude", nargs="*", default=[], help="extra junk domains")
     ap.add_argument("--offline", nargs="*", default=[],
                     help="offline inputs as key=path, key in {ideas,serp,domains}")
@@ -789,21 +947,44 @@ def main(argv=None) -> int:
             log("ERROR: DATAFORSEO_LOGIN / DATAFORSEO_PASSWORD unset.")
             log("       Export them, or run --mode offline with your own exports.")
             return 2
-        est = 0.05 + 0.005 * args.serp_targets + 0.05 * args.max_domains
-        log(f"estimated API cost: ~${est:.2f} "
-            f"(ideas 0.05 + {args.serp_targets} SERPs x 0.005 + {args.max_domains} domains x 0.05)")
+        # SOP volume chain: 5 seeds -> 5*30 candidates -> 5*30 SERPs -> every
+        # surviving domain. The domain count is not known before step 02 runs, so
+        # when no cap is set the estimate must say so instead of pricing an
+        # arbitrary 30 domains and understating the bill by 10x.
+        n_seed = max(1, len(seeds))
+        n_sheet1 = n_seed * args.sheet1_keep
+        n_serp = args.serp_targets or n_sheet1
+        base = 0.05 * n_seed + 0.005 * n_serp
+        if args.max_domains:
+            est = base + 0.05 * args.max_domains
+            log(f"estimated API cost: ~${est:.2f} "
+                f"(step01 {n_seed}x$0.05 + step02 {n_serp}x$0.005 + "
+                f"step03 {args.max_domains} domains x$0.05)")
+        else:
+            # Up to ~50 organic results per SERP, minus platforms: expect a few
+            # hundred distinct domains, i.e. one $0.05 call each.
+            lo = base + 0.05 * (n_serp * 5)
+            hi = base + 0.05 * (n_serp * 12)
+            log(f"estimated API cost: ~${lo:.2f}-${hi:.2f} "
+                f"(step01 {n_seed}x$0.05 + step02 {n_serp}x$0.005 + "
+                f"EVERY surviving domain x$0.05 — unbounded until step 02 finishes)")
+            log("  tip: pass --max-domains N to cap step 03, or --dry-run to stop here")
         if args.dry_run:
             return 0
 
-        log("\n[01 以词找词] expanding seeds into keyword ideas")
-        ideas = step1_ideas(dfs, seeds, args.location, args.language)
-        write_csv(out / "step1_ideas.csv", ideas, SHEET_HEADERS["sheet1"])
+        log("\n[01 以词找词] expanding each seed into candidates")
+        ideas = step1_ideas(dfs, seeds, args.location, args.language, args.per_seed_ideas)
+        write_csv(out / "step1_ideas.csv", ideas, SHEET_HEADERS["trace"])
 
         sheet1 = step2_sheet1(ideas, seeds, args.context, args.sheet1_keep)
-        log(f"\n[02 用词找站] sheet1 = {len(sheet1)} related high-traffic keywords")
+        log(f"\n[02 用词找站] sheet1 = {len(sheet1)} related high-traffic keywords "
+            f"(cap {args.sheet1_keep}/seed)")
         write_csv(out / "sheet1.csv", sheet1, SHEET_HEADERS["sheet1"])
 
-        targets = [r["keyword"] for r in sheet1][: args.serp_targets]
+        targets = [r["keyword"] for r in sheet1]
+        if args.serp_targets:
+            targets = targets[: args.serp_targets]
+            log(f"  (cost cap: only {len(targets)} of {len(sheet1)} keywords)")
         log(f"  pulling top-{args.serp_depth} organic for {len(targets)} keywords")
         hits, dropped = serp_top_domains(dfs, targets, args.location, args.language,
                                          args.serp_depth, exclude)
@@ -814,9 +995,21 @@ def main(argv=None) -> int:
         domains = collect_domains(hits)
         write_csv(out / "step2_domains.csv", domains,
                   ["domain", "n_keywords", "hits", "best"])
-        log(f"  {len(domains)} competitor domains survive the junk filter")
+        log(f"  {len(domains)} unique domains survive the junk filter "
+            f"({len(hits)} hits kept / {len(dropped)} dropped)")
 
-        chosen = [d["domain"] for d in domains if looks_like_domain(d["domain"])][: args.max_domains]
+        # max_domains=0 means "every surviving domain" (SOP behaviour); slicing
+        # with [:0] would silently drop them all, so treat 0 as no cap.
+        # min_breadth drops the long tail: domains that showed up for only one of
+        # your keywords are mostly unrelated sites that happened to rank once, and
+        # at $0.05 each they are the bulk of the bill for very little signal.
+        chosen = [d["domain"] for d in domains
+                  if looks_like_domain(d["domain"])
+                  and d["n_keywords"] >= max(1, args.min_breadth)]
+        if args.max_domains:
+            chosen = chosen[: args.max_domains]
+        log(f"  breadth filter >= {args.min_breadth} keywords: "
+            f"{len(chosen)} of {len(domains)} domains kept for step 03")
         if not chosen:
             log("  ! no valid competitor domains survived; sheet2 and sheet3 will be seed-only")
         log(f"\n[03 用站找词] top-{args.domain_kw_limit} ranked keywords x {len(chosen)} domains")
@@ -844,7 +1037,7 @@ def main(argv=None) -> int:
                 raw_dom = offline_rows(Path(val), "manual")
                 # Same off-topic filter as the API path, so both modes agree.
                 for r in raw_dom:
-                    if seeds and not relevant(r["keyword"], seeds, args.context):
+                    if seeds and not relevant_competitor(r["keyword"], seeds, args.context):
                         continue
                     dom_rows.append(r)
             else:
@@ -858,7 +1051,7 @@ def main(argv=None) -> int:
             log("ERROR: no offline inputs found. Use --offline ideas=... serp=... domains=...")
             return 2
         if ideas:
-            write_csv(out / "step1_ideas.csv", ideas, SHEET_HEADERS["sheet1"])
+            write_csv(out / "step1_ideas.csv", ideas, SHEET_HEADERS["trace"])
             sheet1 = step2_sheet1(ideas, seeds, args.context, args.sheet1_keep)
             write_csv(out / "sheet1.csv", sheet1, SHEET_HEADERS["sheet1"])
         if hits:

@@ -23,16 +23,24 @@ metadata:
 ## Overview
 
 捕鱼模式 treats every keyword as one net: cast more nets, catch more traffic. The
-method is a five-step funnel that ends with a single deduplicated table of
-keywords you can actually rank for.
+The method is a five-step funnel that ends with a single deduplicated table of
+keywords you can actually rank for. The volume chain is the point — each step
+multiplies:
 
 ```
-01 以词找词   5 seed keywords → keyword-ideas expansion
-02 用词找站   top-volume on-topic keywords → Google top-50 organic → drop junk domains
-03 用站找词   each surviving domain → its top-100 ranked keywords → sheet2
-04 交叉去重   merge 01 + 03 → one row per keyword, 4 params → sheet3
-05 筛选利基   filter sheet3 to the niche worth attacking
+01 以词找词   5 seed keywords  → 5 x 30 = 150 candidate keywords      (sheet1)
+02 用词找站   150 keywords      → 150 x 50 = 7,500 SERP results
+              → junk removed → unique registrable domains
+03 用站找词   every surviving domain → its top 100 ranked keywords     (sheet2)
+04 交叉去重   sheet1 (150) + all domain keywords → one row per keyword (sheet3)
+05 筛选利基   optional: narrow sheet3 to the niche worth attacking
 ```
+
+Do not shortcut the chain. Capping step 02 at "the top 20 keywords" turns a
+150-keyword sweep into a 20-keyword sample and the domain list stops being the
+full competitor set. `--serp-targets 0` (default) and `--max-domains 0` (default)
+mean "run them all", which is the SOP behaviour; the flags exist only for a
+cheap trial run.
 
 The script does all five steps and writes every intermediate file, so a failed
 or expensive step never costs you the work before it.
@@ -44,6 +52,20 @@ competitor will happily rank for both. The script derives the industry qualifier
 from tokens present in **every** seed (`forklift`) and treats the trailing noun
 as the category (`battery`); a keyword must carry both. Seed your 5 keywords so
 that at least one token truly appears in all of them.
+
+Two readings of that rule exist and only one is correct — do not confuse them:
+
+- **Required** = present in every seed (`forklift`). The keyword must contain it.
+  Keep this set.
+- **Discard if common to all seeds** = the trap. Sounds like the same idea, but it
+  deletes `forklift` and keeps only `battery`, which then rejects the highest-volume
+  correct keyword. That is pitfall #2 and the subject of
+  `references/relevance-filter-iterations.md`.
+
+The distinction is *required vs. generic*: a token in every seed is a
+requirement; the category noun is the requirement you must **not** treat as
+disqualifying. Implemented in `relevant()` as `required <= kset` plus
+`category & kset`.
 
 ## When to Use
 
@@ -72,8 +94,16 @@ paths produce the same three sheets.
 network, and costs nothing.
 
 ```bash
-python scripts/selftest.py     # expect "N passed, 0 failed"
+python scripts/selftest.py            # end-to-end pipeline, temp fixtures
+python scripts/verify_field_shapes.py # live response shapes, no spend
 ```
+
+`verify_field_shapes.py` is the companion probe: it locks the exact wire shapes
+that real DataForSEO responses have (redirect-wrapped SERP domains, YouTube
+breadcrumbs, `keywords` vs `keyword` payloads, `keyword_data` nesting) because
+every mismatch there produced a plausible-looking but wrong table rather than an
+error. Run both after touching `relevant()`, `domain_from_serp_item()`,
+`step1_ideas()`, `step3_domain_keywords()`, or the dedup path.
 
 It asserts the relevance matrix (both directions), junk-domain filtering,
 plural/separator dedup, and a full offline run. If anything fails, fix that
@@ -98,19 +128,40 @@ Seed choice controls everything downstream, so follow these:
 - include a buying-intent variant: `forklift battery replacement`
 - keep one **shared industry token** across all five (`forklift`)
 
-The script calls `dataforseo_labs/google/keyword_ideas/live` with all seeds at once
-(one API call) and writes `step1_ideas.csv`.
+The script runs `dataforseo_labs/google/keyword_suggestions/live` **once per seed**
+(`limit: max(per_seed*2, 100)`, `include_seed_keyword: true`) and writes
+`step1_ideas.csv`. Per-seed calls are what preserve each seed's context — a single
+combined call loses it and drifts into adjacent categories.
 
-*Done when:* `step1_ideas.csv` has at least a few hundred candidate rows and every
-seed itself appears in it.
+Default budget is **30 candidates per seed** (`--per-seed-ideas 30`), so 5 seeds
+yield ~150 rows. Do not pool the seeds into one shared budget: the loudest seed
+then starves the other four.
+
+`keyword_ideas` is only a top-up for seeds that `keyword_suggestions` could not
+bring up to `per_seed`. When you do call it, pass `"keywords": [seed]` (array) —
+`keyword_ideas/live` does not honour a singular `"keyword"` key and silently
+returns nothing, which looks like "this seed has no more keywords".
+
+*Done when:* `step1_ideas.csv` shows every seed with roughly its own 30
+candidates, and every seed keyword appears with its **real** search volume (a
+seed row with volume 0 means it was injected as a placeholder, not returned).
 
 ### 02 用词找站 — candidates to SERP domains
 
 Two sub-steps from the original SOP, in one command:
 
-1. keep the top **30** on-topic, highest-volume candidates → `sheet1.csv`
-2. pull `serp/google/organic/live/advanced` at depth 50 for the top-N of those
-   (`--serp-targets`, default 20) and drop junk domains
+1. keep the on-topic, highest-volume candidates → `sheet1.csv`. `--sheet1-keep`
+   is a **per-seed** cap (default 30), so 5 seeds × 30 = up to 150 rows. A global
+   cap would let one loud seed consume the whole table.
+2. pull `serp/google/organic/live/advanced` at depth 50 for **every** sheet1
+   keyword and drop junk domains.
+
+**Default is "run everything", not a sample.** `--serp-targets 0` and
+`--max-domains 0` both mean *no cap*, which is the SOP behaviour and what the
+user asked for ("按 30 个词跑 serp，不用节约成本"). Only set a number when the
+user explicitly wants a cheap trial. Watch the `[:0]` trap: slicing a list with a
+cap of 0 drops every row, so the cap must be applied as
+`if cap: rows = rows[:cap]`, never `rows[:cap]` unconditionally.
 
 Junk filtering is what stops the whole flow from collapsing into a marketplace
 export. `amazon.com`, `walmart.com`, `youtube.com` and friends are removed by
@@ -155,15 +206,21 @@ redundant (steps 02/03 already filtered); reach for it when you widened with
 
 ## Command Recipes
 
-Automated, forklift-battery example:
+Automated, full SOP volume (the default — no caps):
 
 ```bash
 python scripts/fishing.py \
   --seeds "forklift battery" "lithium forklift battery" "forklift battery charger" \
           "48v forklift battery" "forklift battery replacement" \
+  --context forklift \
   --location 2840 --language en \
-  --serp-targets 20 --max-domains 15 \
   --out out/
+```
+
+Trial run on a fraction of the SERPs, to sanity-check relevance cheaply:
+
+```bash
+python scripts/fishing.py --seeds "..." --serp-targets 3 --max-domains 2 --out trial/
 ```
 
 Check cost before spending — `--dry-run` prints the estimate and exits:
@@ -195,7 +252,7 @@ case-insensitively against common aliases — `Keyword`/`关键词`, `Volume`/`�
 | File | Contents |
 |------|----------|
 | `step1_ideas.csv` | all expanded candidates from the seeds |
-| `sheet1.csv` | top-30 on-topic high-traffic keywords (4 params) |
+| `sheet1.csv` | on-topic high-traffic keywords (4 params), up to 30 **per seed** |
 | `step2_serp_hits.csv` | every kept organic result: keyword, position, domain, url |
 | `step2_serp_dropped.csv` | every rejected result **with reason** |
 | `step2_domains.csv` | competitor domains with breadth and best position |
@@ -206,14 +263,126 @@ case-insensitively against common aliases — `Keyword`/`关键词`, `Volume`/`�
 
 ## Cost Control
 
-Roughly: ideas `$0.05`, each SERP `$0.005`, each domain's ranked keywords
-`$0.05`. Defaults (20 SERPs + 15 domains) land near **$0.90** per run. Levers,
+`keyword_suggestions` is ~$0.015 per seed, each SERP $0.005, each domain's
+ranked keywords $0.05. The SOP chain is 5 seeds → 150 candidates → 150 SERPs →
+every surviving domain, so cost scales with the domain count:
+
+| Step | Calls | Unit | Subtotal |
+|------|-------|------|----------|
+| 01 candidates | 5 | ~$0.015 | $0.08 |
+| 02 SERPs | 150 | $0.005 | $0.75 |
+| 03 domain keywords | N domains | $0.05 | $0.05 × N |
+
+A measured forklift-battery run (5 seeds, 150 SERPs, 15 domains) cost **$0.83**;
+a full 30-domain sweep lands near **$1.60**. Both are inside a $50 balance.
+
+Default intent is *no cap* — that is the SOP. Levers when the user wants a cap,
 cheapest first:
 
-1. `--serp-targets` — fewer keywords means fewer SERPs
-2. `--max-domains` — the domain step is the expensive one
-3. `--domain-kw-limit` — 100 per the SOP; 50 halves the returned rows, not the price
+1. `--serp-targets N` — SERPs are the bulk of the volume
+2. `--max-domains N` — the domain step is the most expensive per unit
+3. `--domain-kw-limit` — 100 per the SOP; lowering it halves returned rows but
+   barely moves the price, because billing is per request
 4. Cache: re-runs hit the API again, so keep `out/` and re-merge offline instead
+
+A cap changes what the method produces: `--serp-targets 20` turns a 150-keyword
+sweep into a 20-keyword sample and the domain list stops being the full
+competitor set. Use caps for a trial run, not for the deliverable.
+
+## Deliverable Shape — an XLSX with four real sheets
+
+The intermediate `sheet1/sheet2/sheet3.csv` files are for auditing the pipeline.
+The **deliverable is one `.xlsx` workbook with four real sheet tabs**, in this
+order and with these exact Chinese names:
+
+| Sheet | Columns |
+|-------|---------|
+| `种子词拓展` | 关键词, 搜索意图, 搜索量, 竞争难度 |
+| `以站找词` | 关键词, 搜索意图, 搜索量, 竞争难度, 来源域名, 排名 |
+| `去重后可用词` | 关键词, 搜索意图, 搜索量, 竞争难度, 来源 |
+| `同行域名` | 域名, 覆盖关键词数, 命中次数, 最佳排名 |
+
+**Do not build this as a single CSV with `=== 标题 ===` separator rows.** That
+shape was delivered once and rejected outright: "文件中所有的都放在第一个sheet中，
+不是这样子，是分开的表sheet放在同一个csv中". A CSV has no tabs, so writing every
+block into one column-stream means any spreadsheet app shows one flat sheet. If
+the user says "分开的表放在同一个文件里", they mean workbook tabs — build `.xlsx`
+via `openpyxl` (`wb.create_sheet(name)` per block), and clarify only if you
+genuinely cannot tell.
+
+Rules that matter:
+
+- **同行域名 is not `step2_domains.csv`.** That file holds every domain that
+  survived the junk filter (791 in the measured run). The sheet carries only the
+  domains **actually mined in step 03** — the ones judged valuable peers. Build
+  it by intersecting with `competitor_domain` values present in sheet2, then
+  sort by `-覆盖关键词数, 最佳排名`.
+- **Translate intent codes to Chinese** (`T→交易, C→商业, I→信息, N→导航`) in the
+  delivered workbook; keep the raw codes in the CSVs.
+- `freeze_panes = "A2"` + `auto_filter.ref = ws.dimensions` + explicit column
+  widths per header, header row filled `1F4E79` with white bold — the user reads
+  these files directly, so they must look finished.
+- **Also write an ASCII-named copy** (`fishing_mode_<product>_final.xlsx`) beside
+  any Chinese-named file — Chinese filenames frequently fail to double-click open
+  on this user's machine.
+- Before writing, sweep sheet1/sheet2/sheet3 for residual adjacent-vertical
+  keywords (`solar`, `golf`, `marine`, `propane`, `certified`, `rental`). The
+  strict sheet1 rule only requires a seed's tokens to appear, so
+  `48v forklift battery for solar` passes it — that is a solar-storage product,
+  not a traction battery. Drop them before generating the workbook.
+
+Keep a CSV of each block in the run directory as the audit trail; the workbook is
+what gets handed over.
+
+`scripts/build_deliverable_xlsx.py` builds this workbook from a finished run
+directory — `python scripts/build_deliverable_xlsx.py --dir out/ --intent-cn`.
+
+## Cost Decisions Belong to the User
+
+Step 02 routinely surfaces far more domains than expected — the measured
+forklift run produced **790 unique registrable domains** from 150 SERPs, of which
+400 appeared for only one keyword. Mining all of them at $0.05 each is **$39.5**,
+which is 20x a capped run and shocks the balance.
+
+So: **do not silently truncate and do not silently run it all.** Print the real
+count, the real price, and offer graded choices in one message. On the measured
+run the options were 790 domains ($39.5) / breadth≥2 390 ($19.5) / breadth≥3
+247 ($12.4) / top-30 trial; the user picked ≥3 at $12.4 and the actual charge
+came in at $5.51 because many domains returned few on-topic rows.
+
+`--min-breadth N` exists for exactly this: domains appearing for fewer than N of
+your keywords are mostly unrelated sites that ranked once. Default 2; 3 is a
+good "real topical competitors" line. Report the cost **after** the run from
+`dfs.spend`, not the estimate — the estimate has been wrong in both directions
+(it once priced a fixed 30 domains while the chain mined 790).
+
+## Practice Run — Reconciling Numbers With the Stated SOP
+
+This user asks for a self-check and challenges any gap between the counts and
+the SOP as written ("真实数据跑通的在数据数量上和我发给你逻辑验证的存在误差").
+Answer by **tabulating spec vs actual per stage**, not with prose assurance:
+
+| Stage | Spec | Actual |
+|-------|------|--------|
+| seeds | 5 | 5 |
+| per-seed candidates | 30 each → ~150 | 112–144 (some seeds genuinely lack 30 on-topic terms) |
+| SERP depth | 50 per keyword | request depth 50, organic median ~39 (Google returns fewer) |
+| domains mined | every surviving site | set by the user's cost decision — state it explicitly |
+| sheet3 | 4 params, deduped | state row count and total volume |
+
+Then name which gaps are **your bug** vs **the data source's limit**. Being
+vague here reads as covering up; the user will push again.
+
+Two more things that made this exchange work on the second attempt:
+
+- **Re-report from the files on disk, not from memory.** The first answer quoted
+  "51 keywords" from a run that had since been overwritten by a rerun; the real
+  files said 113/1837/216. Read row counts out of the CSVs in the same turn you
+  answer, and say which directory you read.
+- **Own the mistakes explicitly.** When the gap is a cap you passed
+  (`--max-domains 15` against a 790-domain set) or a rule you chose, say so in
+  one line and fix it, instead of explaining it away as a data limit. The user's
+  trust recovered on the answer that led with "两个是我的错".
 
 ## Common Pitfalls
 
@@ -225,9 +394,17 @@ cheapest first:
    highest-volume keyword on the list. Commonsense-looking fix that silently
    destroys output. Full four-attempt history in
    `references/relevance-filter-iterations.md`.
-3. **Being generously inclusive.** `lithium battery` and `48v battery` read as
-   related to a lithium forklift battery business and are a different product
-   page. Adjacent-category keywords belong to other products — drop them.
+3. **Applying the strict rule to competitor keywords.** This one cost an entire
+   run before it was caught. Step 02 needs the strict rule (require the industry
+   qualifier) or `car battery` floods sheet1. Step 03 must **not** use it: fed a
+   competitor's own keyword list, the strict rule kept **0 of 100** for
+   `leochlithium.us`, `redwaypower.com`, `malinusa.com` and `innovdepot.com` —
+   every lithium rival surfaced by our own SERPs — because their lists read
+   `lithium battery`, `lifepo4 battery`, `48v lithium battery` with no "forklift".
+   `relevant_competitor()` is the inverted rule: keep category tokens, drop only
+   named adjacent verticals (solar, golf, car, marine, RV, phone, laptop, UPS…).
+   A domain only reaches step 03 by ranking for our keywords, which is already
+   proof it is in the business.
 4. **Spot-checking only the dropped rows.** Every broken filter version kept
    some junk out successfully. The damaging bug is always the flagship keyword
    silently removed, so assert must-keep and must-drop in the same test.
@@ -264,8 +441,13 @@ cheapest first:
 15. **`keyword_ideas` as the step-01 source.** It is associative, not vertical:
     seeded with forklift terms it returned `smoke detector battery` (201k) and
     `car battery` (74k) at the top, and the 5 seeds with volume 0. Use
-    `keyword_suggestions` per seed (keeps context, returns real seed volume) and
-    merge ideas behind the filter.
+    `keyword_suggestions` per seed (keeps context, returns real seed volume);
+    call `keyword_ideas` only as a per-seed top-up, and pass **`"keywords": [seed]`**
+    — the singular `"keyword"` key is ignored and returns an empty item list,
+    which reads as "this seed is exhausted" rather than as a bug.
+    A seed row with **volume 0** is the tell that it was injected as a
+    placeholder instead of returned by the API: check for it before trusting
+    sheet1, because sorting by volume silently parks it at the bottom.
 16. **Reading `url` / `domain` from a live Google SERP.** DataForSEO emits
     `domain: "google.com"` and `url: "https://google.com/goto?url=CAES..."` for
     every organic item; the whole competitor list became google.com. The real
@@ -279,17 +461,65 @@ cheapest first:
     returned for a depth-50 request, and it looked like the filter had eaten
     everything. Omit the parameter. `40101 Internal SE Server Error` is transient
     — retry with backoff, then skip that keyword.
+19. **Docs drifting behind the code (the expensive one).** After the step-01
+    source changed from `keyword_ideas` to per-seed `keyword_suggestions`, and
+    the caps changed from "20/15" to "no cap", this SKILL.md still described the
+    old behaviour. A fresh session reading it would have "fixed" the code back
+    to the version that produced drifted, off-topic keywords. When you change a
+    default, a source endpoint, or a cap's scope, **patch SKILL.md in the same
+    turn** — the pitfalls list, the step description, the command recipe, the
+    output table, and the cost section all restate those values.
+20. **Verifying a file that changed underneath you.** `fishing.py` was edited by
+    another writer after being committed (100 insertions / 38 deletions). A test
+    run reported 83/83 green while the log line it printed did not exist in the
+    version that had been read earlier — that mismatch was the only signal.
+    Always `git status --short` before claiming verification, and treat a log
+    message you do not recognise as evidence you are testing different code.
+21. **A function returning a different tuple than its caller unpacks.**
+    `serp_top_domains()` was changed to `return hits, collect_domains(hits)` while
+    the caller still did `hits, dropped = serp_top_domains(...)`. The junk filter
+    itself worked (zero amazon/youtube rows in `hits`), but `dropped` became the
+    *domain table*, so `step2_serp_dropped.csv` was 791 domains with empty reason
+    columns. Nothing raised, every row count looked plausible, and the audit trail
+    silently vanished. When a helper's return type changes, grep for **every**
+    call site in the same edit — and assert in the self-test that the dropped file
+    contains a `reason` on each row.
+22. **`step2_sheet1` collapsing rows that carry no seed prefix.** Grouping was
+    `src.split(":", 1)[1] if ":" in src else src`, so rows whose `source` was
+    `sheet1` (offline exports, a re-read of a written CSV) all landed in one
+    bucket and the per-seed cap became a whole-table cap of 30. Fixed by
+    attributing un-prefixed rows to the seed with the largest token overlap.
+    Corollary: keep `source` in `step1_ideas.csv` (write it with the `trace`
+    header, not the 4-column `sheet1` header) so a rerun can regroup accurately
+    instead of guessing from keyword text.
 
 ## Verification Checklist
 
 - [ ] `python scripts/selftest.py` exits 0 before any paid run
+- [ ] `python scripts/verify_field_shapes.py` exits 0 after touching the filter,
+      SERP-domain, step-01, step-03, or dedup code
+- [ ] `git status --short` clean before claiming verification (the file may have
+      been edited by another writer — see pitfall #20)
 - [ ] 5 seeds, all sharing one industry token; no brand names
-- [ ] `sheet1.csv` ≤ 30 rows, all on-topic for the product
+- [ ] `sheet1.csv` all on-topic, up to 30 rows **per seed** (5 seeds → ≤150)
 - [ ] `step2_serp_dropped.csv` exists and every row has a `reason`
 - [ ] `step2_domains.csv` contains real competitors, no marketplace/directory domains
 - [ ] `sheet2.csv` free of adjacent-category keywords (solar, golf cart, car)
 - [ ] `sheet3.csv` has exactly keyword / intent / volume / difficulty (+ sources)
 - [ ] No duplicate keyword in `sheet3.csv` after singular/plural normalisation
+- [ ] Deliverable built as **one `.xlsx` with four real sheet tabs** (种子词拓展 /
+      以站找词 / 去重后可用词 / 同行域名), each with frozen header row + autofilter,
+      plus an ASCII-named copy
+- [ ] 同行域名 contains only domains actually mined in step 03, not all of
+      `step2_domains.csv`
+- [ ] Workbook opened once and inspected: `wb.sheetnames` has exactly those four
+      names, and each sheet's `max_row > 1` (a "delivered" workbook with empty
+      tabs is the failure mode this checklist exists to catch)
+- [ ] `step2_serp_dropped.csv` rows each carry a non-empty `reason` (see pitfall 21)
+- [ ] Candidate total reported as "≤150", never asserted as exactly 150: per-seed
+      requests for narrow seeds (`48v …`, `… replacement`) genuinely return fewer
+      than 30 terms. 112–144 out of a nominal 150 is correct output, not a bug —
+      do not "fix" it by loosening the relevance rule.
 - [ ] `fishing_mode_sheets.xlsx` opens with three sheets and auto-filters on
 - [ ] Row counts reported by the script match the files
 
