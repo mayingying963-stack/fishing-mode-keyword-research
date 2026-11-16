@@ -4,10 +4,9 @@ description: >-
   捕鱼法/Fishing-Mode keyword research (SEO小平 SOP): 5 seeds → per-seed
   expansion → top-50 Google SERP each → drop junk domains → competitors'
   top-100 keywords → dedup to 关键词/意图/搜索量/难度 + 同行域名 sheet. Builds a
-  keyword universe for one product from scratch; not a ranking audit. Triggers:
-  捕鱼法, 捕鱼模式, 种子词, 以词找词, 用词找站, 以站找词, 关键词词库, 竞品关键词,
-  同行域名, 挖词, 选词, keyword universe, competitor keyword mining. Runs on
-  DataForSEO API (~$1.6–3/run) or offline from SEO Minion/Semrush/Ahrefs exports.
+  keyword universe from scratch; not a ranking audit. Triggers: 捕鱼法,
+  种子词, 以词找词, 用词找站, 以站找词, 关键词词库, 竞品关键词, 同行域名, 挖词.
+
 version: 1.0.0
 author: Hermes Agent
 license: MIT
