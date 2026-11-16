@@ -22,7 +22,8 @@ metadata:
 
 ## Overview
 
-捕鱼模式 treats every keyword as one net: cast more nets, catch more traffic. The
+捕鱼模式 treats every keyword as one net: cast more nets, catch more traffic.
+
 The method is a five-step funnel that ends with a single deduplicated table of
 keywords you can actually rank for. The volume chain is the point — each step
 multiplies:
@@ -259,7 +260,7 @@ case-insensitively against common aliases — `Keyword`/`关键词`, `Volume`/`�
 | `sheet2.csv` | competitor-ranked keywords, on-topic only, with domain + position |
 | `step3_domain_summary.csv` | per-domain pulled / dropped counts |
 | `sheet3.csv` | **the deliverable** — deduped, 4 params + sources |
-| `fishing_mode_sheets.xlsx` | sheet1 / sheet2 / sheet3 in one workbook |
+| `关键词调研_最终表.xlsx` | the handover workbook — four real sheets, see "Deliverable Shape" |
 
 ## Cost Control
 
@@ -334,8 +335,19 @@ Rules that matter:
 Keep a CSV of each block in the run directory as the audit trail; the workbook is
 what gets handed over.
 
-`scripts/build_deliverable_xlsx.py` builds this workbook from a finished run
-directory — `python scripts/build_deliverable_xlsx.py --dir out/ --intent-cn`.
+`scripts/export_workbook.py` builds this workbook from a finished run directory:
+
+```bash
+python scripts/export_workbook.py out/                          # -> out/关键词调研_最终表.xlsx
+python scripts/export_workbook.py out/ -o report.xlsx
+python scripts/export_workbook.py out/ --min-breadth 3          # peers covering >=3 keywords
+```
+
+It takes the **run directory as a positional argument** (not `--dir`), reads
+`sheet1/sheet2/sheet3/step2_domains.csv` from it, derives 同行域名 by
+intersecting with the domains actually mined, and localises intent automatically
+— there is no `--intent-cn` flag. It exits 2 if the directory is missing or has
+no `sheet3.csv`, so a typo fails loudly instead of writing an empty workbook.
 
 ## Cost Decisions Belong to the User
 
@@ -492,6 +504,26 @@ Two more things that made this exchange work on the second attempt:
     Corollary: keep `source` in `step1_ideas.csv` (write it with the `trace`
     header, not the 4-column `sheet1` header) so a rerun can regroup accurately
     instead of guessing from keyword text.
+23. **`relevant_competitor()` only excluding *verticals*, not *services*.** The
+    inverted step-03 rule kept category tokens and dropped adjacent verticals, so
+    `forklift certified` (a training course), `forklift rental near me` (a service)
+    and `forklift operator job` sailed through into sheet3 — they contain no
+    adjacent vertical, only the industry token. Add a separate
+    `NON_PRODUCT_INTENT` set (`certified, certification, training, course, rental,
+    rent, hire, lease, operator, job, salary, career, school, exam`) and reject on
+    it **before** the vocab check, in both rules. The self-test caught this only
+    because the step-03 fixture included `forklift certified`; when you widen a
+    filter's vocabulary, widen its rejection fixtures at the same time.
+24. **Sourcing seed tokens from the expanded sheet instead of the seeds.**
+    `export_workbook.py` derived the adjacent-vertical exemption list from
+    `sheet1.csv`, so a keyword that had already drifted —
+    `48v forklift battery for solar` — contributed `solar` to the exempt list and
+    then exempted *itself*. Read seed tokens from the real seeds only
+    (`seeds.txt`, else the `source` column of `step1_ideas.csv`), and when no
+    source is available fall back to **strict** (exempt nothing): a missed
+    exemption drops one keyword, a spurious one admits a whole wrong vertical.
+    Symptom to watch for: the workbook's row count is one or two higher than the
+    CSV it was built from.
 
 ## Verification Checklist
 
@@ -520,7 +552,6 @@ Two more things that made this exchange work on the second attempt:
       requests for narrow seeds (`48v …`, `… replacement`) genuinely return fewer
       than 30 terms. 112–144 out of a nominal 150 is correct output, not a bug —
       do not "fix" it by loosening the relevance rule.
-- [ ] `fishing_mode_sheets.xlsx` opens with three sheets and auto-filters on
 - [ ] Row counts reported by the script match the files
 
 ## Attribution

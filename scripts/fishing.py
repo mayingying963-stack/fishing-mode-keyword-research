@@ -190,6 +190,11 @@ def relevant(keyword: str, seeds: list[str], extra_terms: list[str]) -> bool:
     STOP = {"for", "of", "in", "the", "a", "an", "to", "and", "on", "with", "vs"}
     kset = set(re.findall(r"[a-z0-9]+", k))
 
+    # Service/training/rental phrases are never the product, in any vertical:
+    # "inverter certified", "contactor rental", "battery repair near me".
+    if NON_PRODUCT_INTENT & kset or matched_phrase(k, NON_PRODUCT_INTENT):
+        return False
+
     seed_tok_lists = []
     for s in seeds:
         stoks = [w for w in re.findall(r"[a-z0-9]+", s.lower()) if w not in STOP]
@@ -205,14 +210,25 @@ def relevant(keyword: str, seeds: list[str], extra_terms: list[str]) -> bool:
     for toks in seed_tok_lists:
         for w in set(toks):
             freq[w] = freq.get(w, 0) + 1
-    required = {w for w, c in freq.items() if c == len(seed_tok_lists) and len(w) > 2}
-    # The category noun is the required token that also appears last in most seeds.
+    # The trailing word of most seeds is the category noun ("battery", "inverter",
+    # "contactor"). Compute it first: when every seed shares a single industry word,
+    # `required` and `category` collapse into the same token and the rule degrades
+    # to "contains the category ⇒ pass", which let "ac contactor" through a DC
+    # contactor seed set and "pure sine wave inverter" through a solar one.
     tail: dict[str, int] = {}
     for toks in seed_tok_lists:
         tail[toks[-1]] = tail.get(toks[-1], 0) + 1
     category = {w for w, c in tail.items() if c >= max(2, (len(seed_tok_lists) + 1) // 2)}
     if not category:
-        category = required
+        category = set.intersection(*map(set, seed_tok_lists)) or set(seed_tok_lists[0][-1:])
+
+    # Required = industry words shared by all seeds, EXCLUDING the category noun.
+    # "forklift battery" seeds → required {"forklift"}; "dc contactor" seeds where
+    # every seed is <modifier> + "contactor" → required = the non-category shared
+    # words (here {"dc"}). If that leaves nothing, the seeds carry no industry
+    # qualifier at all and the category alone is the only signal available.
+    required = {w for w, c in freq.items()
+                if c == len(seed_tok_lists) and len(w) > 2 and w not in category}
 
     # An --context term can rescue an on-topic keyword that spells the product
     # differently ("scissor lift battery" vs a forklift seed), but it must not
@@ -237,27 +253,79 @@ def relevant(keyword: str, seeds: list[str], extra_terms: list[str]) -> bool:
         return False
     if category and not (category & kset):
         return False
+
+    # A keyword made of nothing but category words ("contactor", "inverter") is a
+    # different, broader product: it passes only if it is literally one of the
+    # seeds. Without this, a "dc contactor" seed set accepts "contactor" and
+    # "ac contactor", which are the AC product line.
+    content = kset - STOP
+    if category and content <= category:
+        seed_sets = [set(re.findall(r"[a-z0-9]+", s.lower())) - STOP for s in seeds]
+        if not any(ss == content for ss in seed_sets):
+            return False
+    # The competing product line is not a variant: "ac contactor" for a DC product.
+    if opposites_of(seeds) & kset:
+        return False
+    # An adjacent vertical is a different product: "car battery" for a forklift
+    # battery business. Skipped when a seed names that vertical (a golf-cart
+    # battery seller keeps "golf").
+    seed_tokens = {w for s in seeds for w in re.findall(r"[a-z0-9]+", s.lower())}
+    if (ADJACENT_VERTICALS & kset) - seed_tokens:
+        return False
     return True
 
 
-def adjacent_categories(seeds: list[str]) -> set[str]:
-    """Category nouns that sit next to ours but are different products.
+def seed_category_tokens(seeds: list[str]) -> set[str]:
+    """The category-bearing tokens of a seed set: trailing noun(s) + every seed token.
 
-    Derived from the seeds' own nouns plus a fixed list of battery-adjacent
-    verticals. Used by the relaxed rule so a competitor site's solar / golf-cart /
-    car-battery keywords are dropped without demanding a strict phrase match.
+    Used by the relaxed competitor rule to decide what counts as "same product
+    family". The full seed vocabulary is included on purpose — a lithium battery
+    rival's list is mostly "lithium battery", which shares only the category with
+    a forklift-battery seed.
     """
-    base = {"battery", "batteries", "cell", "cells", "pack", "packs"}
-    base |= {w for s in seeds for w in re.findall(r"[a-z0-9]+", s.lower())}
-    return base - ADJACENT_VERTICALS
+    toks: set[str] = set()
+    tails: set[str] = set()
+    for s in seeds:
+        st = [w for w in re.findall(r"[a-z0-9]+", s.lower()) if len(w) > 1]
+        if not st:
+            continue
+        tails.add(st[-1])
+        toks |= set(st)
+    return toks | tails
 
 
-# Verticals that are a different product even when the word "battery" appears.
+def matched_phrase(keyword: str, phrases: set[str]) -> bool:
+    """True when any phrase occurs in the keyword as a whole-word run.
+
+    Single tokens are matched on token boundaries; multi-word entries ("repair
+    near", "service near") are matched as substrings so they can span tokens.
+    """
+    if not phrases:
+        return False
+    k = f" {' '.join(re.findall(r'[a-z0-9]+', (keyword or '').lower()))} "
+    for p in phrases:
+        p = p.strip().lower()
+        if not p:
+            continue
+        if " " in p:
+            if f" {p} " in k:
+                return True
+        elif f" {p} " in k:
+            return True
+    return False
+
+
+# Verticals that are a different product even when the category word appears.
+# Keep this list to truly cross-industry nouns. Deliberately absent:
+#   "truck"  — a forklift IS a "forklift truck"; listing it rejected
+#              "battery for forklift truck" and "forklift truck battery chargers"
+#   "home"/"residential" — ordinary modifiers for solar and storage products
+#   "solar"  — only adjacent when the product is not itself solar
 ADJACENT_VERTICALS = {
-    "car", "auto", "automotive", "truck", "tractor", "marine", "boat", "rv",
+    "car", "auto", "automotive", "tractor", "marine", "boat", "rv",
     "camper", "motorcycle", "scooter", "ebike", "bike", "phone", "laptop",
-    "solar", "golf", "cart", "cart's", "ups", "generator", "drone", "rv's",
-    "powerwall", "residential", "home", "hearing", "watch", "tool", "toys",
+    "golf", "cart", "ups", "generator", "drone", "powerwall",
+    "hearing", "watch", "toys",
 }
 
 # Keywords that are about the *machine* or the *service*, never the part we sell.
@@ -268,8 +336,35 @@ NON_PRODUCT_INTENT = {
     "certified", "certification", "training", "course", "classes", "license",
     "licence", "rental", "rent", "rentals", "hire", "leasing", "lease",
     "operator", "job", "jobs", "salary", "career", "school", "test", "exam",
-    "auction", "repair near", "service near",
+    "auction", "wiring diagram",
 }
+
+# Conventional opposites. If a seed says "dc", the keyword saying "ac" is the
+# competing product line, not a variant — same for on/off-grid, indoor/outdoor.
+ANTONYM_GROUPS = [
+    {"dc", "ac"},
+    {"on", "off"},
+    {"indoor", "outdoor"},
+    {"wired", "wireless"},
+    {"manual", "automatic", "auto"},
+    {"single", "three", "3"},
+    {"lithium", "lead"},
+]
+
+
+def opposites_of(seeds: list[str]) -> set[str]:
+    """Tokens that name the competing product line of a seed token.
+
+    Seeds mentioning "dc" ⇒ pairs with "ac". Seeds mentioning "lithium" ⇒ pairs
+    with "lead". Used to reject "ac contactor" for a "dc contactor" product
+    without hardcoding every vertical's vocabulary.
+    """
+    seed_tokens = {w for s in seeds for w in re.findall(r"[a-z0-9]+", s.lower())}
+    out: set[str] = set()
+    for group in ANTONYM_GROUPS:
+        if group & seed_tokens:
+            out |= group - seed_tokens
+    return out
 
 
 def relevant_competitor(keyword: str, seeds: list[str], extra_terms: list[str]) -> bool:
@@ -293,19 +388,52 @@ def relevant_competitor(keyword: str, seeds: list[str], extra_terms: list[str]) 
     kset = set(re.findall(r"[a-z0-9]+", k))
     # Service/training/rental words are never the product, whatever else is in
     # the phrase: "forklift certified", "forklift rental near me", "forklift jobs".
-    if NON_PRODUCT_INTENT & kset:
+    # Matched as phrases so multi-word entries like "repair near" work too.
+    if NON_PRODUCT_INTENT & kset or matched_phrase(k, NON_PRODUCT_INTENT):
         return False
-    keep_tokens = adjacent_categories(seeds)
+    keep_tokens = seed_category_tokens(seeds)
     if extra_terms:
         for t in extra_terms:
             keep_tokens |= set(re.findall(r"[a-z0-9]+", str(t).lower()))
     if not (keep_tokens & kset):
         return False
+    # The bare category noun alone is not enough: for "dc contactor" seeds the
+    # keyword "contactor" (or "ac contactor") is a different product. Require at
+    # least one *modifier* token shared with a seed, unless the keyword is itself
+    # a seed phrase. Modifiers = seed tokens minus the trailing category noun.
+    tails: set[str] = set()
+    for s in seeds:
+        st = [w for w in re.findall(r"[a-z0-9]+", s.lower()) if len(w) > 1]
+        if st:
+            tails.add(st[-1])
+    modifiers = {w for s in seeds for w in re.findall(r"[a-z0-9]+", s.lower())} - tails
+    if modifiers:
+        # A category-only keyword ("battery", "module") passes only when it IS one
+        # of our seeds; otherwise it needs a modifier from a seed.
+        seed_phrases = [set(re.findall(r"[a-z0-9]+", s.lower())) for s in seeds]
+        is_seed = any(sp == kset for sp in seed_phrases)
+        if not is_seed and not (modifiers & kset):
+            return False
     # An adjacent vertical disqualifies, unless one of our seeds names it too
     # (a business that genuinely sells golf-cart batteries passes "golf").
     seed_tokens = {w for s in seeds for w in re.findall(r"[a-z0-9]+", s.lower())}
     blocked = (ADJACENT_VERTICALS & kset) - seed_tokens
-    return not blocked
+    if blocked:
+        return False
+    # A different head noun means a different product: "solar panel" and
+    # "golf club" borrow the seed's modifier but are not the thing we sell. Pass
+    # only if the keyword's own head noun is a seed category word, or the keyword
+    # is a seed phrase.
+    seed_sets = [set(re.findall(r"[a-z0-9]+", s.lower())) - {"for", "of", "in", "the",
+                                                            "a", "an", "to", "and"}
+                 for s in seeds]
+    if kset and any(ss <= kset for ss in seed_sets):
+        return True
+    heads = {next(iter(re.findall(r"[a-z0-9]+", s.lower())[-1:]), "") for s in seeds}
+    content = {w for w in kset if len(w) > 2}
+    if heads and not (heads & content):
+        return False
+    return True
 
 
 # ------------------------------------------------------------------ DataForSEO
