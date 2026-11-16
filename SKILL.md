@@ -1,14 +1,17 @@
 ---
 name: fishing-mode-keyword-research
 description: >-
-  Use when the user wants a full keyword universe for one product built from
-  scratch — the "捕鱼法 / Fishing-Mode" SOP (SEO小平). Five seed keywords →
-  keyword-ideas expansion → top-50 Google SERP per keyword → junk-domain
-  filtering → competitor domain keyword mining → cross-deduped
-  sheet1/sheet2/sheet3 with keyword, intent, volume, difficulty. Triggers on
-  "捕鱼法", "种子词", "以词找词", "用词找站", "关键词词库", "competitor keyword
-  mining", "build a keyword universe", "SEO小平". Runs against DataForSEO API or
-  your own SEO Minion / Semrush / Ahrefs / DataForSEO exports.
+  Use when the user wants to build a keyword universe for ONE product from
+  scratch — 捕鱼法 / Fishing-Mode (SEO小平's SOP), not an audit of existing
+  rankings. Turns 5 seed keywords into a deduplicated keyword table: per-seed
+  expansion → on-topic filtering → Google top-50 SERP per keyword → junk-domain
+  removal (amazon/walmart/youtube) → each surviving competitor domain's top-100
+  keywords → cross-dedup into 关键词/搜索意图/搜索量/竞争难度 plus a competitor-domain
+  sheet. Triggers on 捕鱼法, 捕鱼模式, 种子词, 以词找词, 用词找站, 以站找词, 关键词词库,
+  竞品关键词, 同行域名, 选词, 挖词, keyword universe, competitor keyword mining,
+  keyword research for a new product, SEO小平. Runs on DataForSEO API (成本约
+  $1.6–3/次) or fully offline from SEO Minion / Semrush / Ahrefs exports. Ships
+  scripts/fishing.py, an xlsx exporter, and 194 offline assertions.
 version: 1.0.0
 author: Hermes Agent
 license: MIT
@@ -144,7 +147,7 @@ paths produce the same three sheets.
 **Before trusting this skill, run the checks.** No API key, no network, no cost.
 
 ```bash
-python scripts/run_checks.py          # ← the one command; runs all three suites
+python scripts/run_checks.py          # ← the one command; runs all four suites
 ```
 
 Individually, when you need the full output of one:
@@ -157,7 +160,17 @@ python scripts/push_script_checks.py  # 22 — push_ssh.sh guard rails
 ```
 
 `run_checks.py` exits non-zero if any suite fails, so it works as a pre-commit
-gate or CI step.
+gate or CI step. **Every executable in this repo is covered by it**, including
+the bash one — that is deliberate: a file outside the suite means every edit to
+it lands as "unverified" with no mechanical answer, which is exactly what kept
+happening to `push_ssh.sh` before `push_script_checks.py` existed.
+
+How this skill got to that shape — promoting throwaway probes into the repo,
+guards that violate their own invariant, green suites hiding test bugs,
+order-of-operations assertions, console-encoding crashes, and delivering over
+SSH when HTTPS is blocked — is written up in
+`references/verification-and-delivery.md`. Read it when building any
+script-plus-deliverable skill, not just this one.
 
 `verify_field_shapes.py` locks the exact wire shapes that real DataForSEO
 responses have (redirect-wrapped SERP domains, YouTube breadcrumbs, `keywords`
@@ -611,6 +624,38 @@ Two more things that made this exchange work on the second attempt:
     and `car battery` through step 02. Whenever you add a rejection vocabulary,
     grep both rules — there are exactly two, and they must share every guard
     except the competitor-specific exemption.
+28. **Ad-hoc verification scripts that vanish leave no evidence.** Every turn
+    produced a throwaway `hermes-verify-*.py`, ran green, and was deleted — so the
+    next turn legitimately reported "unverified" and the work was re-done from
+    scratch, five times over. A verification script proves nothing once it is
+    gone. The fix that ended the cycle: **promote the probe into the repo**
+    (`preflight_checks.py`, `push_script_checks.py`) and register it in
+    `run_checks.py`, so the claim "it passes" is reproducible by anyone, later,
+    with one command. Test code is deliverable, not scaffolding.
+29. **A check that embeds the thing it forbids.** `preflight_checks.py` scanned
+    `git grep` for the literal DataForSEO credential strings — which wrote those
+    strings into the repo, and made the check fail on itself. The scan must match
+    credential *shapes* (`token:token` pairs, `Basic <blob>`), never the actual
+    values, and it needs both directions tested: it must fire on a real-looking
+    pair and stay quiet on `your-login`. Any guard you write is a candidate for
+    this failure mode — ask "does the guard itself violate the invariant?".
+30. **A green suite hiding a test bug (the dangerous kind).** `push_script_checks`
+    asserted "dirty tree ⇒ remote untouched" and failed, but the script's order
+    was correct — the *test* reused one bare repo, so it read a branch left by the
+    previous (successful) push. Two lessons: give each assertion its own fixture,
+    and when a guard rail test fails, prove which side is wrong before editing
+    production code. A test that fails for the wrong reason trains you to ignore
+    the one that fails for the right one.
+31. **Order-of-operations guards must be asserted in the source.** A dirty-tree
+    check that appears *after* `git push` is decorative. `push_script_checks.py`
+    asserts `body.index("status --porcelain") < body.index("git push")` so a
+    refactor cannot silently reorder them while every behavioural test still
+    passes on a clean tree.
+32. **Flaky suite runs mean a nondeterministic input, not flaky code.** The suite
+    passed, then failed, then passed with no code change between runs — because the
+    secret scanner matched its own file the moment it was committed. When a suite
+    is intermittently red, diff the *state* (untracked files, committed files, env)
+    rather than re-running and hoping.
 
 ## Verification Checklist
 
@@ -646,6 +691,12 @@ Two more things that made this exchange work on the second attempt:
 - [ ] **After any change to the two relevance rules:** replay the last delivered
       workbook through them and confirm zero must-keep losses (synthetic fixtures
       do not catch vertical-specific regressions like `truck`)
+- [ ] Any new executable (script, bash helper) is registered in
+      `scripts/run_checks.py` in the same commit — an uncovered file will report
+      "unverified" on every future edit and get re-tested from scratch
+- [ ] If you wrote an ad-hoc verification script this session, promote it into
+      `scripts/` and add it to `SUITES` instead of deleting it; see
+      `references/verification-and-delivery.md`
 
 ## Attribution
 

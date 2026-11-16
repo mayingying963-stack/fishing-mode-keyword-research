@@ -61,6 +61,12 @@ BASE = https://api.dataforseo.com/v3/
 （SEO Minion 只在你想用离线模式手动导出 SERP 时才涉及，且它产出的 Excel 直接喂给
 `--mode offline` 即可，不需要安装任何东西到本 skill。）
 
+> 用户环境提示：这台机器上用户的 OpenSEO 是连接 **`https://seo.fuckseo.io/`**
+> （非官方域名；`/mcp` 端点存在但返回 401，需 OAuth）。它和本 skill **无关**——
+> 本 skill 直连 DataForSEO REST，不经过任何网关。会话中如果用户提到「我连的是
+> seo.fuckseo.io」，那是在说另一个工具，不要把它当作本 skill 的依赖去配置。
+> 用户当时的原话是「如果可以用就不改了」，即不要求改 MCP 地址。
+
 凭证获取：https://app.dataforseo.com/api-access
 - 页面上的 **API password** 才是 `DATAFORSEO_PASSWORD`
 - 页面上给的 Base64 串就是 `login:password`，`echo <base64> | base64 -d` 可得
