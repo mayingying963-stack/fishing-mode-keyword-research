@@ -125,6 +125,17 @@ SERP 和域名挖掘都是 `max_workers=6` 并发，并对 `40101 Internal SE Se
 | `NON_PRODUCT_INTENT` | 服务类词（certified/rental/training/jobs…） | 你的行业有独特的服务词 |
 | `ANTONYM_GROUPS` | 对立产品线（ac/dc、lead/lithium、on/off-grid） | 你的品类有成对的对立规格 |
 
+**已知不能放进 `ADJACENT_VERTICALS` 的词**（放进去会误杀你自己的正常词）：
+
+| 词 | 为什么不能放 |
+|---|---|
+| `truck` | 叉车本身就叫 **forklift truck**，放进去会剔掉 `battery for forklift truck`、`forklift truck battery chargers` |
+| `home` / `residential` | 太阳能、储能产品的正常修饰词，会剔掉 `solar inverter for home` |
+| `solar` | 只有当你的产品**不是**太阳能时才该当异类；做成硬编码会伤到太阳能品类 |
+
+同理，`NON_PRODUCT_INTENT` 里不要放 `for sale`、`repair`——这些是正常商业词
+（`forklift battery for sale`、`forklift battery repair` 都是有效关键词）。
+
 判断方法：跑完先看 `step2_serp_dropped.csv`（每条都有 `reason`）和
 `step3_domain_summary.csv`（每站 `offtopic_dropped` 比例）。
 
