@@ -161,10 +161,16 @@ check("BASE is the DataForSEO v3 endpoint",
       fishing.BASE, "https://api.dataforseo.com/v3/")
 check("relevant_competitor exists", callable(fishing.relevant_competitor), True)
 check("opposites_of exists", callable(fishing.opposites_of), True)
-leak = subprocess.run(["git", "-C", str(ROOT), "grep", "-nE",
-                       r"1ou9rygr|2e02ed4|MW91OXJ5"],
-                      capture_output=True).stdout.decode().strip()
-check("no credentials committed", leak, "")
+# Scan for credential *shapes* rather than literals: hardcoding the real strings
+# here would put them in the repo, which is exactly what this check exists to
+# prevent (it caught itself doing so).
+leak = subprocess.run(
+    ["git", "-C", str(ROOT), "grep", "-nE",
+     r"([A-Za-z0-9]{18,}:[A-Za-z0-9]{12,})|(Basic\s+[A-Za-z0-9+/]{20,})"],
+    capture_output=True).stdout.decode().strip()
+# DATAFORSEO_LOGIN=value in .env.example style docs is fine; a real pair is not.
+leak = "\n".join(l for l in leak.splitlines() if "your-" not in l and "example" not in l.lower())
+check("no credential-shaped strings committed", leak, "")
 
 print("\n" + "=" * 66)
 print(f"{PASS} passed, {FAIL} failed")
