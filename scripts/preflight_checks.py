@@ -134,6 +134,19 @@ check("doc does not overstate the floor to 3.10+",
 # ------------------------------------------------ 6. docs match code
 section("[6] reference doc covers every enforced requirement")
 skilldoc = (ROOT / "SKILL.md").read_text(encoding="utf-8")
+
+# The description is the only text read before the skill is loaded, so its length
+# is a hard budget: past ~350 chars it turns into a spec nobody triggers on. It
+# has been re-inflated by concurrent edits twice, hence the assertion.
+import yaml
+_fm_match = re.search(r"\n---\s*\n", skilldoc[3:])
+_fm = yaml.safe_load(skilldoc[3:_fm_match.start() + 3])
+_desc = _fm.get("description", "")
+check("description <= 350 chars", len(_desc) <= 350, True)
+check("description is non-trivial (> 80 chars)", len(_desc) > 80, True)
+check("name matches directory", _fm.get("name"), ROOT.name)
+for trigger in ("捕鱼法", "种子词", "以词找词", "用词找站", "以站找词", "挖词"):
+    check(f"description keeps trigger {trigger}", trigger in _desc, True)
 for needle in ("Python", "requests", "openpyxl", "DATAFORSEO_LOGIN",
                "DATAFORSEO_PASSWORD", "location", "2840"):
     check(f"env doc mentions {needle}", needle in envdoc, True)
