@@ -136,8 +136,21 @@ way it does — each one silently produced a plausible but wrong table.
 | `batteries` and `battery` never merged | naive `-s` stripping turned `batteries` into `batterie` | proper `-ies → -y` plural handling |
 | SERP returned 0 rows | `max_crawl_pages: 1` truncated item parsing | parameter removed; `40101` retried with backoff |
 
-Run `python scripts/selftest.py` (67 assertions, no API key needed) before
-trusting a change.
+Run the checks before trusting a change — no API key, no network, no cost:
+
+```bash
+python scripts/run_checks.py
+```
+
+```
+[PASS] selftest.py                offline end-to-end pipeline   67 passed
+[PASS] verify_field_shapes.py     DataForSEO wire shapes        52 passed
+[PASS] preflight_checks.py        environment contract + docs   53 passed
+RESULT: all 3 suites passed
+```
+
+On a new machine, also run `python scripts/fishing.py --check-env --mode api` to
+see what the environment is missing before spending anything.
 
 ## Attribution
 

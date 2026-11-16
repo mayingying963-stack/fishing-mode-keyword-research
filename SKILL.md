@@ -141,20 +141,37 @@ no browser extension is involved.
 Without credentials, run `--mode offline` against exports you already have. Both
 paths produce the same three sheets.
 
-**Before trusting this skill, run the self-test.** It needs no API key, no
-network, and costs nothing.
+**Before trusting this skill, run the checks.** No API key, no network, no cost.
 
 ```bash
-python scripts/selftest.py            # end-to-end pipeline, temp fixtures
-python scripts/verify_field_shapes.py # live response shapes, no spend
+python scripts/run_checks.py          # ← the one command; runs all three suites
 ```
 
-`verify_field_shapes.py` is the companion probe: it locks the exact wire shapes
-that real DataForSEO responses have (redirect-wrapped SERP domains, YouTube
-breadcrumbs, `keywords` vs `keyword` payloads, `keyword_data` nesting) because
-every mismatch there produced a plausible-looking but wrong table rather than an
-error. Run both after touching `relevant()`, `domain_from_serp_item()`,
-`step1_ideas()`, `step3_domain_keywords()`, or the dedup path.
+Individually, when you need the full output of one:
+
+```bash
+python scripts/selftest.py            # 67 — end-to-end pipeline, temp fixtures
+python scripts/verify_field_shapes.py # 52 — live DataForSEO response shapes
+python scripts/preflight_checks.py    # 53 — environment contract + docs
+```
+
+`run_checks.py` exits non-zero if any suite fails, so it works as a pre-commit
+gate or CI step.
+
+`verify_field_shapes.py` locks the exact wire shapes that real DataForSEO
+responses have (redirect-wrapped SERP domains, YouTube breadcrumbs, `keywords`
+vs `keyword` payloads, `keyword_data` nesting) because every mismatch there
+produced a plausible-looking but wrong table rather than an error.
+
+`preflight_checks.py` asserts the environment contract — that Chinese logging
+survives a cp1252/ascii console, that missing credentials block only API mode,
+that an unwritable output directory is caught before any spend, and that
+`references/environment-and-preflight.md` never claims something the code does
+not do.
+
+Run all three after touching `relevant()`, `relevant_competitor()`,
+`domain_from_serp_item()`, `step1_ideas()`, `step3_domain_keywords()`,
+`preflight()`, the dedup path, or the relevance constants.
 
 It asserts the relevance matrix (both directions), junk-domain filtering,
 plural/separator dedup, and a full offline run. If anything fails, fix that
@@ -596,7 +613,7 @@ Two more things that made this exchange work on the second attempt:
 
 ## Verification Checklist
 
-- [ ] `python scripts/selftest.py` exits 0 before any paid run
+- [ ] `python scripts/run_checks.py` exits 0 before any paid run
 - [ ] `python scripts/verify_field_shapes.py` exits 0 after touching the filter,
       SERP-domain, step-01, step-03, or dedup code
 - [ ] `git status --short` clean before claiming verification (the file may have
