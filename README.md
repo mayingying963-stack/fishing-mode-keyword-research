@@ -146,7 +146,8 @@ python scripts/run_checks.py
 [PASS] selftest.py                offline end-to-end pipeline   67 passed
 [PASS] verify_field_shapes.py     DataForSEO wire shapes        52 passed
 [PASS] preflight_checks.py        environment contract + docs   53 passed
-RESULT: all 3 suites passed
+[PASS] push_script_checks.py      push_ssh.sh guard rails       22 passed
+RESULT: all 4 suites passed
 ```
 
 On a new machine, also run `python scripts/fishing.py --check-env --mode api` to

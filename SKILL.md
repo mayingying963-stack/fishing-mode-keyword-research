@@ -153,6 +153,7 @@ Individually, when you need the full output of one:
 python scripts/selftest.py            # 67 — end-to-end pipeline, temp fixtures
 python scripts/verify_field_shapes.py # 52 — live DataForSEO response shapes
 python scripts/preflight_checks.py    # 53 — environment contract + docs
+python scripts/push_script_checks.py  # 22 — push_ssh.sh guard rails
 ```
 
 `run_checks.py` exits non-zero if any suite fails, so it works as a pre-commit

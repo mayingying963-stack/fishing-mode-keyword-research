@@ -25,6 +25,7 @@ SUITES = [
     ("selftest.py", "offline end-to-end pipeline"),
     ("verify_field_shapes.py", "DataForSEO wire shapes"),
     ("preflight_checks.py", "environment contract + docs"),
+    ("push_script_checks.py", "push_ssh.sh guard rails"),
 ]
 
 
