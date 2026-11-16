@@ -68,6 +68,30 @@ requirement; the category noun is the requirement you must **not** treat as
 disqualifying. Implemented in `relevant()` as `required <= kset` plus
 `category & kset`.
 
+### This skill is product-agnostic — keep it that way
+
+Nothing in the rules is specific to batteries or forklifts; every set is derived
+from the seeds (industry qualifier, category noun, modifiers, antonyms). But
+"no hardcoded word" is not the same as "works for any product" — the rules were
+built on one vertical and had three structural defects that only show up on
+others. Read `references/product-agnostic-relevance.md` before using the skill
+on a new category; it carries the four-vertical audit, the three defects
+(required/category collapse when all seeds share one industry word; strict rule
+missing the guards the relaxed rule had; `truck` wrongly listed as adjacent for a
+forklift product) and the calibration procedure for the three vocabularies.
+
+When starting a new product, the only manual work is calibrating three sets:
+
+| Set | Put in it | Keep out |
+|-----|-----------|----------|
+| `ADJACENT_VERTICALS` | cross-industry nouns that mean a different product (`car`, `marine`, `rv`, `phone`, `ups`) | words describing your own product (`truck` for forklifts, `home` for solar) |
+| `NON_PRODUCT_INTENT` | service/intent words: `certified, training, rental, lease, operator, job, exam, wiring diagram` | `for sale`, `repair near me` — real commercial keywords for a dealer |
+| `ANTONYM_GROUPS` | genuine rival product lines (`dc`/`ac`, `lead`/`lithium`, single/three-phase) | anything merely "nice to exclude"; this set is a hard reject |
+
+After any rule change, **replay a previous run's delivered workbook** through the
+new rules. Synthetic fixtures missed the `truck` bug entirely; the real
+spreadsheet showed it in one line.
+
 ## When to Use
 
 - Building a keyword universe for one product from a blank page
@@ -81,12 +105,38 @@ keyword's difficulty check (use `seo-dataforseo`), or local-pack/grid work
 
 ## Setup
 
+**First, on any new machine, run the environment check** — it reports what is
+present and what is missing, and it costs nothing:
+
+```bash
+python scripts/fishing.py --check-env --mode api      # or --mode offline
+```
+
+`RESULT: ready` means you can run. Anything else prints `BLOCK:` lines with the
+fix. Full requirement table, market codes and per-vertical calibration advice:
+`references/environment-and-preflight.md`.
+
+Minimum requirements (all verified by `preflight()` before any paid call):
+
+| Requirement | Needed for | If missing |
+|---|---|---|
+| Python ≥ 3.9 | everything | blocks: `dict \| dict` and `X \| Y` syntax |
+| `requests` | `--mode api` only | blocks API mode; offline still works |
+| `DATAFORSEO_LOGIN` + `DATAFORSEO_PASSWORD` | `--mode api` only | blocks API mode |
+| writable output dir | everything | blocks (probed before spending) |
+| `openpyxl` | `.xlsx` output only | warns: CSVs are still complete |
+| UTF-8 console | readable Chinese logs | warns; output files are always UTF-8+BOM |
+
 ```bash
 pip install requests openpyxl          # requests only needed for --mode api
 
 export DATAFORSEO_LOGIN=you@example.com
-export DATAFORSEO_PASSWORD=...          # DataForSEO API password, NOT your site login
+export DATAFORSEO_PASSWORD=***          # DataForSEO API password, NOT your site login
 ```
+
+The only external service this connects to is the DataForSEO REST API
+(`https://api.dataforseo.com/v3/`, HTTP Basic auth). No MCP server, no gateway,
+no browser extension is involved.
 
 Without credentials, run `--mode offline` against exports you already have. Both
 paths produce the same three sheets.
@@ -524,6 +574,25 @@ Two more things that made this exchange work on the second attempt:
     exemption drops one keyword, a spurious one admits a whole wrong vertical.
     Symptom to watch for: the workbook's row count is one or two higher than the
     CSV it was built from.
+25. **Assuming a filter tuned on one product generalises.** The user asked
+    directly: "我这个 skill 是所有产品词通用的一种调查逻辑，可不是针对你测试的
+    forklift 来的，这点没错吧". The honest answer required an audit, and the audit
+    found three defects — all structural, none visible in the forklift vertical.
+    When the user asserts a skill is general, treat it as a claim to verify, not
+    a fact to confirm. See `references/product-agnostic-relevance.md`.
+26. **`required` and `category` collapsing into one token.** When every seed
+    shares a single industry word (`dc contactor`, `semi module`), the word lands
+    in both sets and the rule degrades to "contains the category ⇒ pass" — so
+    `ac contactor` passed a **DC** seed set. Compute `category` first, then build
+    `required` as `freq == n AND w not in category`, and add a bare-category
+    guard: a keyword made only of category words passes only if it *is* a seed.
+    The forklift seeds hide this because `forklift` and `battery` are distinct.
+27. **Guards added to one rule but not the other.** `NON_PRODUCT_INTENT` and
+    `ADJACENT_VERTICALS` were wired into `relevant_competitor()` only, because
+    `relevant()` predated them; non-battery products then let `inverter certified`
+    and `car battery` through step 02. Whenever you add a rejection vocabulary,
+    grep both rules — there are exactly two, and they must share every guard
+    except the competitor-specific exemption.
 
 ## Verification Checklist
 
@@ -553,6 +622,12 @@ Two more things that made this exchange work on the second attempt:
       than 30 terms. 112–144 out of a nominal 150 is correct output, not a bug —
       do not "fix" it by loosening the relevance rule.
 - [ ] Row counts reported by the script match the files
+- [ ] **New product category:** run the four-vertical audit
+      (`references/product-agnostic-relevance.md`) and calibrate
+      `ADJACENT_VERTICALS` / `NON_PRODUCT_INTENT` / `ANTONYM_GROUPS` for it
+- [ ] **After any change to the two relevance rules:** replay the last delivered
+      workbook through them and confirm zero must-keep losses (synthetic fixtures
+      do not catch vertical-specific regressions like `truck`)
 
 ## Attribution
 

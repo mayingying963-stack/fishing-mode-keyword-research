@@ -66,6 +66,21 @@ STOP_TOKENS = {"for", "of", "in", "the", "a", "an", "to", "and", "on", "with", "
 
 
 # ------------------------------------------------------------------ utilities
+def _safe_stream(stream) -> None:
+    """Make stdout/stderr survive consoles that cannot encode Chinese.
+
+    On a zh-CN Windows box with default settings, or in CI, sys.stdout uses
+    cp1252/ascii and printing "以词找词" raises UnicodeEncodeError, killing a run
+    that is otherwise fine. Re-encode with backslashreplace so a log line can
+    never be the reason the pipeline dies.
+    """
+    try:
+        stream.reconfigure(errors="backslashreplace")
+    except (AttributeError, ValueError, OSError):
+        # Not a TextIOWrapper (pytest capture, some IDEs) — nothing to do.
+        pass
+
+
 def log(msg: str) -> None:
     print(msg, flush=True)
 
@@ -1016,7 +1031,82 @@ def offline_serp_dir(paths: list[str], exclude: set[str] | None = None
 
 
 # ------------------------------------------------------------------ driver
+def preflight(mode: str) -> tuple[bool, list[str], list[str]]:
+    """Check what this machine can actually do, before any money is spent.
+
+    This skill runs on Windows/macOS/Linux with CPython 3.9+. Everything it needs
+    from the environment is verified here rather than discovered mid-run:
+
+      * Python >= 3.9   (uses dict | dict merge and X | Y type unions)
+
+      * requests        hard requirement for --mode api; absent => API mode dies
+                        on the first call with a confusing NameError
+      * openpyxl        optional: without it the run still writes every CSV and
+                        only skips the .xlsx workbook
+      * DATAFORSEO_LOGIN / DATAFORSEO_PASSWORD
+                        hard requirement for --mode api
+      * console encoding
+                        Chinese log lines crash on cp1252/ascii consoles; we
+                        switch the stream to backslashreplace instead of failing
+      * out dir writable
+                        a read-only or missing volume fails after the API spend
+
+    Returns (ok, blockers, warnings). Blockers stop the run; warnings are things
+    that degrade output but let it continue.
+    """
+    blockers: list[str] = []
+    warnings: list[str] = []
+
+    if sys.version_info < (3, 9):
+        blockers.append(
+            f"Python {sys.version_info.major}.{sys.version_info.minor} is too old; "
+            "this skill needs 3.9+ (uses dict | dict and X | Y annotations)")
+    if sys.version_info < (3, 10):
+        warnings.append(
+            "Python < 3.10: the code avoids match/3.10-only syntax, but 3.10+ is "
+            "what it is tested on")
+
+    try:
+        import requests  # noqa: F401
+    except ImportError:
+        if mode == "api":
+            blockers.append(
+                "missing dependency 'requests' — required for --mode api "
+                "(pip install requests). Offline mode works without it.")
+
+    try:
+        import openpyxl  # noqa: F401
+    except ImportError:
+        warnings.append(
+            "missing dependency 'openpyxl' — CSV output is complete, but the "
+            ".xlsx workbook will be skipped (pip install openpyxl)")
+
+    if mode == "api":
+        login = os.getenv("DATAFORSEO_LOGIN") or os.getenv("DATAFORSEO_USERNAME")
+        pwd = os.getenv("DATAFORSEO_PASSWORD")
+        if not login or not pwd:
+            blockers.append(
+                "DATAFORSEO_LOGIN / DATAFORSEO_PASSWORD are not set. Export both "
+                "(the password is the API password from "
+                "https://app.dataforseo.com/api-access, not your account login). "
+                "Use --mode offline to work from your own exports instead.")
+
+    # A console that cannot encode Chinese would raise on the first log line.
+    for stream in (sys.stdout, sys.stderr):
+        enc = (getattr(stream, "encoding", "") or "").lower()
+        if enc and enc not in ("utf-8", "utf8"):
+            warnings.append(
+                f"console encoding is {enc}: Chinese log text may be garbled "
+                "(output files are unaffected; they are always UTF-8 with BOM)")
+
+    return (not blockers), blockers, warnings
+
+
 def main(argv=None) -> int:
+    # Must run before any log() call: a cp1252/ascii console would otherwise
+    # raise UnicodeEncodeError on the first Chinese line.
+    _safe_stream(sys.stdout)
+    _safe_stream(sys.stderr)
     ap = argparse.ArgumentParser(
         description="捕鱼法 keyword research — SEO小平 Fishing-Mode SOP, automated.")
     ap.add_argument("--seeds", nargs="+", default=[], help="5 seed keywords for the product")
@@ -1049,6 +1139,9 @@ def main(argv=None) -> int:
                     help="also drop off-topic keywords from sheet3 (step 05)")
     ap.add_argument("--out", default="out")
     ap.add_argument("--dry-run", action="store_true", help="estimate cost only")
+    ap.add_argument("--check-env", action="store_true",
+                    help="report what this machine can/cannot do, then exit. "
+                         "Run this first on a new machine.")
     args = ap.parse_args(argv)
 
     seeds = list(args.seeds)
@@ -1057,7 +1150,46 @@ def main(argv=None) -> int:
                   if l.strip()]
     seeds = list(dict.fromkeys(seeds))
     out = Path(args.out)
+
+    if args.check_env:
+        ok, blockers, warnings = preflight(args.mode)
+        log(f"python      : {sys.version.split()[0]} ({sys.executable})")
+        log(f"platform    : {sys.platform}")
+        log(f"console enc : {getattr(sys.stdout, 'encoding', '?')}")
+        log(f"mode        : {args.mode}")
+        for mod in ("requests", "openpyxl"):
+            try:
+                m = __import__(mod)
+                log(f"{mod:<12}: ok ({getattr(m, '__version__', '?')})")
+            except ImportError:
+                log(f"{mod:<12}: MISSING")
+        for w in warnings:
+            log(f"WARN  : {w}")
+        for b in blockers:
+            log(f"BLOCK : {b}")
+        log("RESULT: ready" if ok else "RESULT: not ready (see BLOCK lines)")
+        return 0 if ok else 2
+
     out.mkdir(parents=True, exist_ok=True)
+
+    # ---- environment gate: fail before spending, not after ----
+    ok, blockers, warnings = preflight(args.mode)
+    for w in warnings:
+        log(f"  ! {w}")
+    if not ok:
+        for b in blockers:
+            log(f"ERROR: {b}")
+        return 2
+
+    # The output volume must be writable; discovering this after 150 paid SERPs
+    # would waste the whole run.
+    try:
+        probe = out / ".write_probe"
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink()
+    except OSError as err:
+        log(f"ERROR: output directory is not writable: {out} ({err})")
+        return 2
 
     if not seeds and args.mode == "api":
         log("ERROR: pass --seeds (5 seed keywords, per step 01) or --seeds-file.")
